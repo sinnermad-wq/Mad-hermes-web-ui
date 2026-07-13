@@ -5,20 +5,27 @@
  * resolve local mocks synchronously; tomorrow each `fetch*` call can be
  * swapped for `fetch('/api/...')` once the FastAPI backend lands.
  *
+ * Mode switch — see docs/CONFIG.md:
+ *   - VITE_API_BASE_URL empty/missing  → MOCK mode (v1 default)
+ *   - VITE_API_BASE_URL set            → REAL mode (v2; current code still mocks)
+ *   - VITE_MINI_APP=1                  → Mini App auth header injection (v2; v1 no-op)
+ *
  * Slots reserved for later:
  *   - GET /api/sessions                  (list, filter by pinned/archived)
  *   - GET /api/sessions/:id              (single session summary)
  *   - GET /api/sessions/:id/messages     (conversation thread)
  *   - GET /api/sessions/:id/trace        (agent trace entries)
  *   - GET /api/sessions/:id/context      (cached context stats)
- *   - GET /api/dashboard/overview        (KPIs)
- *   - GET /api/dashboard/health          (component health rows)
- *   - GET /api/dashboard/review          (prediction review history)
- *   - GET /api/dashboard/queue           (cron/webhook/spawn queue rows)
- *   - SSE /api/events                    (push updates — Trace panel, queue)
- *   - Telegram Mini App: served as a static sub-app at /mini-app/* by
- *     Vite via the same bundles, but POST /api/mini-app/auth to exchange
- *     initData for a session JWT (backend-side reservation).
+ *   - POST /api/sessions/:id/messages    (user message → assistant stub; rest via SSE)
+ *   - POST /api/sessions/:id/approval/:traceId
+ *   - GET /api/dashboard/{overview,health,review,queue}
+ *   - GET /api/dashboard/blocks?area=…
+ *   - SSE /api/events                    (see docs/SSE.md; payload envelope below)
+ *   - POST /api/mini-app/auth            (Telegram initData → JWT — see docs/MINI_APP.md;
+ *                                         v1 client never invokes; reservation only).
+ *
+ * All payload shapes are also re-exported from here so pages can `import type { … }`
+ * without reaching into `mock/data.ts`.
  */
 
 import {
@@ -74,6 +81,32 @@ export type {
   QueueRow,
   StatusMetaEntry,
 };
+
+/* ------------------------ Config / Mode ------------------------ */
+
+/** Live runtime mode, derived from `import.meta.env`. */
+export type ApiMode = 'mock' | 'real' | 'mini-app';
+
+/** Returns 'mock' when VITE_API_BASE_URL is unset, 'real' otherwise. */
+export function getMode(): ApiMode {
+  const base = (import.meta.env.VITE_API_BASE_URL ?? '').toString().trim();
+  if (!base) return 'mock';
+  if ((import.meta.env.VITE_MINI_APP ?? '').toString() === '1') return 'mini-app';
+  return 'real';
+}
+
+/** Base URL read from env. Empty in v1 mock mode. v2 fetch wrappers key off this. */
+export function getApiBaseUrl(): string {
+  return (import.meta.env.VITE_API_BASE_URL ?? '').toString().trim();
+}
+
+/** SSE endpoint read from env or derived from base. */
+export function getSseUrl(): string {
+  const override = (import.meta.env.VITE_SSE_URL ?? '').toString().trim();
+  if (override) return override;
+  const base = getApiBaseUrl();
+  return base ? `${base}/events` : '';
+}
 
 /* ------------------------ Sessions ------------------------ */
 
@@ -182,21 +215,67 @@ export async function getQueue(): Promise<QueueRow[]> {
   return queueRows;
 }
 
-/**
- * Server-side widget registration point for dashboard blocks.
- * The existing `daily-xauusd-bot` packages chart cards. We expose the same
- * shape so a single Telemetry API can return them in v2.
- */
-export interface DashboardBlockSpec {
-  id: string;
-  type: 'kpi' | 'chart' | 'table' | 'placeholder';
-  title: string;
-  source?: string; // e.g., 'daily-xauusd-bot'
-  props?: Record<string, unknown>;
-}
-
-export async function getDashboardBlocks(area: 'overview' | 'health' | 'review' | 'queue'): Promise<DashboardBlockSpec[]> {
-  // Future: GET /api/dashboard/blocks?area=...
-  void area;
+export async function getDashboardBlocks(_area: 'overview' | 'health' | 'review' | 'queue'): Promise<DashboardBlockSpec[]> {
+  // Future: GET /api/dashboard/blocks?area=…
   return [];
 }
+
+/** Tagged union — discriminated payload type for every SSE event name. */
+export type DashboardBlockSpec =
+  | { id: string; type: 'kpi'; title: string; source?: string; props: { label: string; value: string; delta?: string; status?: string } }
+  | { id: string; type: 'chart'; title: string; source?: string; props: { component: string; height?: number; data?: unknown[] } }
+  | { id: string; type: 'table'; title: string; source?: string; props: { columns: { key: string; label: string }[]; rows: unknown[] } }
+  | { id: string; type: 'placeholder'; title: string; source?: string; props: { height?: number; hint?: string } };
+
+/* ------------------------ SSE (server-sent events) — reservation ------------------------ */
+
+/**
+ * Server-sent event envelope. The server emits `event: <type>` and `data: <json>`
+ * on the wire; the client wrapper packages into this shape.
+ *
+ * Full event vocabulary + per-event payloads: see docs/SSE.md.
+ */
+export interface SSEEvent<T = unknown> {
+  type: SSEEventType;
+  payload: T;
+  id?: string;     // SSE last-event-id, for resume
+  ts: string;      // ISO8601 server-emitted
+}
+
+/** Stable string enum of `event:` line names. */
+export type SSEEventType =
+  | 'session.started'
+  | 'session.title'
+  | 'session.archived'
+  | 'session.context'
+  | 'chat.message'
+  | 'chat.messageEdit'
+  | 'trace.step'
+  | 'trace.completed'
+  | 'approval.requested'
+  | 'approval.resolved'
+  | 'queue.row'
+  | 'queue.deleted'
+  | 'health.changed';
+
+/* ------------------------ Telegram Mini App — reservation ------------------------ */
+
+/** Body for POST /api/mini-app/auth. v1 client does NOT call this. */
+export interface MiniAppAuthBody {
+  initData: string;          // raw window.Telegram.WebApp.initData
+}
+
+/** Successful response from POST /api/mini-app/auth. v1 client does NOT call this. */
+export interface MiniAppAuthResp {
+  token: string;             // short-lived JWT (~15 min)
+  expiresAt: string;         // ISO
+  sessionId: string;         // server-bound, = sub of JWT
+  user: {
+    id: number;              // telegram user id
+    username?: string;
+    firstName?: string;
+  };
+}
+
+/** sessionStorage key reserved for Mini App JWT. v1 does not write it. */
+export const MINI_APP_JWT_STORAGE_KEY = 'hermes-web-ui.mini-app.jwt';
