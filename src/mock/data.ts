@@ -121,13 +121,7 @@ const tMinutesAgo = (m: number) => new Date(now - m * 60 * 1000).toISOString();
 export const chatThreadMock: ChatThread = {
   sessionId: '20260713_135012_56e011dc',
   messages: [
-    {
-      id: 'm1',
-      role: 'user',
-      content: '/sessions',
-      at: tMinutesAgo(118),
-      tokens: 4,
-    },
+    { id: 'm1', role: 'user', content: '/sessions', at: tMinutesAgo(118), tokens: 4 },
     {
       id: 'm2',
       role: 'assistant',
@@ -140,23 +134,22 @@ export const chatThreadMock: ChatThread = {
     {
       id: 'm3',
       role: 'user',
-      content:
-        '20260713_135012_56e011dc, 並 UPDATE TITLE 為 AI AGENT UI',
+      content: '20260713_135012_56e011dc, 並 UPDATE TITLE 為 AI AGENT UI',
       at: tMinutesAgo(60),
       tokens: 24,
     },
     {
       id: 'm4',
       role: 'tool',
-      content: "hermes sessions rename → Session '20260713_135012_56e011dc' renamed to: AI AGENT UI",
+      content:
+        "hermes sessions rename → Session '20260713_135012_56e011dc' renamed to: AI AGENT UI",
       at: tMinutesAgo(60),
       durationMs: 412,
     },
     {
       id: 'm5',
       role: 'assistant',
-      content:
-        'Renamed ✅. The active telegram session now has the title `AI AGENT UI`.',
+      content: 'Renamed ✅. The active telegram session now has the title `AI AGENT UI`.',
       at: tMinutesAgo(59),
       tokens: 22,
       durationMs: 310,
@@ -178,50 +171,125 @@ export const chatThreadMock: ChatThread = {
       tokens: 48,
       durationMs: 5200,
     },
+    { id: 'm8', role: 'user', content: 'CMD prompt 如何啟動 UI?', at: tMinutesAgo(3), tokens: 8 },
+    {
+      id: 'm9',
+      role: 'assistant',
+      content: '```bash\ncd hermes-web-ui\nnpm install\nnpm run dev\n```\n-> http://localhost:5173',
+      at: tMinutesAgo(2),
+      tokens: 42,
+      durationMs: 780,
+    },
+    { id: 'm10', role: 'user', content: '補 README', at: tMinutesAgo(1), tokens: 3 },
+    {
+      id: 'm11',
+      role: 'assistant',
+      content:
+        'Done. README + docs/API.md + docs/SSE.md + docs/MINI_APP.md + docs/CONFIG.md + .env.example all committed.',
+      at: tMinutesAgo(0),
+      tokens: 38,
+      durationMs: 920,
+    },
   ],
 };
 
-/**
- * Per-session thread lookup. Each row in `sessionsMock` has a matching entry
- * so clicking a session in the Chat UI swaps conversation content. Missing
- * ids fall back to `emptyThread` so the UI never blows up on a stale id.
+/** Per-session thread lookup covering all 7 sessions in sessionsMock.
+ *
+ *  session                      listed  mock   gap
+ *  56e011dc  AI AGENT UI         38     11    real content in SQLite
+ *  a3f1b2    HK Brief             19      8    mock partial
+ *  c4d5e6    XAUUSD brief         10      6    mock partial
+ *  aa11bb    K8s probe            42      9    mock partial
+ *  ff22cc    Twelve Data TZ       26      6    mock partial
+ *  77ee99    Archive skill         14      5    mock partial
+ *  44ab12    Archive cache         8      4    mock partial
+ *
+ *  Wire GET /api/sessions/:id/messages in v2 FastAPI to replace with live data.
  */
 export const chatThreadsBySession: Record<string, ChatThread> = {
   [chatThreadMock.sessionId]: chatThreadMock,
+
   '20260713_090007_a3f1b2': {
     sessionId: '20260713_090007_a3f1b2',
     messages: [
-      { id: 'hkgm1', role: 'system', content: 'cron · Daily Hong Kong Briefing', at: tMinutesAgo(280) },
-      { id: 'hkgm2', role: 'assistant', content: 'Morning brief built from HKEX status + weather + headlines.', at: tMinutesAgo(279), tokens: 420, durationMs: 5400 },
-      { id: 'hkgm3', role: 'tool', content: 'hkex.status → Main market · opens 09:30', at: tMinutesAgo(279), durationMs: 410 },
-      { id: 'hkgm4', role: 'assistant', content: 'Sent to telegram (home 980366696).', at: tMinutesAgo(278), tokens: 110, durationMs: 900 },
+      { id: 'hk1', role: 'system', content: 'cron · Daily Hong Kong Briefing · Jul 13 09:03 HKT', at: tMinutesAgo(280) },
+      { id: 'hk2', role: 'assistant', content: 'Running morning brief pipeline…', at: tMinutesAgo(279) },
+      { id: 'hk3', role: 'tool', content: 'hkex.status → Main market active · closes 16:00 HKT · Pre-mkt 09:00–09:30', at: tMinutesAgo(279), durationMs: 310 },
+      { id: 'hk4', role: 'tool', content: 'weather.hko 9am → 29°C, cloudy, Typhoon Signal 1 in effect', at: tMinutesAgo(279), durationMs: 480 },
+      { id: 'hk5', role: 'assistant', content: 'Markets: Hang Seng Futures +0.3% pre-mkt. Baidu earnings after close today.', at: tMinutesAgo(278), tokens: 210, durationMs: 3800 },
+      { id: 'hk6', role: 'assistant', content: '📬 Sent to telegram (home 980366696). Closing in 2h19m.', at: tMinutesAgo(277), tokens: 88, durationMs: 920 },
+      { id: 'hk7', role: 'system', content: 'Session closed · 19 messages · 09:03 → 09:04 HKT', at: tMinutesAgo(276) },
     ],
   },
+
   '20260713_083007_c4d5e6': {
     sessionId: '20260713_083007_c4d5e6',
     messages: [
-      { id: 'xg1', role: 'system', content: 'cron · Daily XAUUSD 黃金簡報', at: tMinutesAgo(310) },
-      { id: 'xg2', role: 'assistant', content: 'XAU/USD 08:31 HKT brief: bullish bias, watch 4080 support.', at: tMinutesAgo(309), tokens: 280, durationMs: 4200 },
+      { id: 'xg1', role: 'system', content: 'cron · Daily XAUUSD 黃金簡報 · Jul 13 08:31 HKT', at: tMinutesAgo(310) },
+      { id: 'xg2', role: 'assistant', content: 'Gold spot analysis running…', at: tMinutesAgo(309) },
+      { id: 'xg3', role: 'tool', content: 'twelve.get_price XAU/USD → 4085.64 mid, 4085.10 bid, 4086.18 ask', at: tMinutesAgo(309), durationMs: 540 },
+      { id: 'xg4', role: 'tool', content: 'XAUUSD 15m candle: high 4092.40 low 4079.80 close 4085.64 +0.38%', at: tMinutesAgo(309), durationMs: 290 },
+      { id: 'xg5', role: 'assistant', content: 'XAU/USD 08:31 HKT brief:\n• Bias: Bullish — holding 4080 support\n• Resistance: 4095 / 4105\n• Watch: 4075 break would accelerate', at: tMinutesAgo(308), tokens: 140, durationMs: 4200 },
+      { id: 'xg6', role: 'system', content: 'Session closed · 10 messages · 08:31 → 08:32 HKT', at: tMinutesAgo(307) },
     ],
   },
+
   '20260712_214500_aa11bb': {
     sessionId: '20260712_214500_aa11bb',
     messages: [
-      { id: 'k8s1', role: 'user', content: 'cluster health?', at: tMinutesAgo(60 * 16) },
-      { id: 'k8s2', role: 'assistant', content: '3 nodes Ready, 1 cordoned. etcd quorum 3/3.', at: tMinutesAgo(60 * 16), tokens: 320, durationMs: 1800 },
+      { id: 'k1', role: 'user', content: 'cluster health?', at: tMinutesAgo(60 * 16) },
+      { id: 'k2', role: 'assistant', content: 'Querying k8s API…', at: tMinutesAgo(60 * 16) },
+      { id: 'k3', role: 'tool', content: 'kubectl top nodes → cpu% mem%\n  node-1  Ready  23%   41%\n  node-2  Ready  18%   38%\n  node-3  Ready  61%   72%  ⚠️ high\n  node-4  NotReady  —  cordoned (kernel oops)', at: tMinutesAgo(60 * 16), durationMs: 890 },
+      { id: 'k4', role: 'user', content: "what's wrong with node-4?", at: tMinutesAgo(60 * 16 - 5) },
+      { id: 'k5', role: 'tool', content: 'kubectl describe node node-4 → LastStateReady: false\n  Reason: KubeletNotReady\n  Message: PLEG is not healthy\n  kernel: BUG: soft lockup — CPU#0 stuck for 23s', at: tMinutesAgo(60 * 16 - 5), durationMs: 620 },
+      { id: 'k6', role: 'assistant', content: 'node-4 has a kernel soft lockup — CPU stuck. Already cordoned.\n3/4 nodes Ready. etcd quorum: 3/3 ✅\nRecommendation: drain node-4, terminate and replace instance.', at: tMinutesAgo(60 * 16 - 4), tokens: 185, durationMs: 1100 },
+      { id: 'k7', role: 'user', content: 'drain and replace', at: tMinutesAgo(60 * 16 - 3) },
+      { id: 'k8', role: 'assistant', content: 'Running: kubectl drain node-4 —ignore-daemonsets —delete-emptydir-data\nDone. node-4 cordoned and drained (0 pods remaining). Ready for termination.', at: tMinutesAgo(60 * 16 - 2), tokens: 94, durationMs: 3200 },
+      { id: 'k9', role: 'system', content: 'Session closed · 42 messages · pinned', at: tMinutesAgo(60 * 15) },
     ],
   },
+
   '20260712_181432_ff22cc': {
     sessionId: '20260712_181432_ff22cc',
     messages: [
       { id: 'td1', role: 'user', content: 'twelve data bar 時區差 10 小時？', at: tMinutesAgo(60 * 19) },
-      { id: 'td2', role: 'assistant', content: '確認係佢哋 server clock 偏差，唔係我哋轉換 bug。已記錄 review。', at: tMinutesAgo(60 * 19), tokens: 96, durationMs: 1100 },
+      { id: 'td2', role: 'assistant', content: 'Inspecting timestamp handling…', at: tMinutesAgo(60 * 19) },
+      { id: 'td3', role: 'tool', content: 'fetch_data → get_latest_bar() returned 2026-07-13T15:30:00Z\n  UTC: 15:30  HKT: 23:30  ← latest bar\n  Local HKT now (screenshot): 13:33  ← 10h ahead', at: tMinutesAgo(60 * 19), durationMs: 440 },
+      { id: 'td4', role: 'assistant', content: '確認係 Twelve Data 伺服器時鐘偏差，唔係我哋 timezone 轉換 bug。Badge 用 Date.UTC() construction 正確。X軸已加 timeZone: Asia/Hong_Kong。', at: tMinutesAgo(60 * 19 - 1), tokens: 112, durationMs: 980 },
+      { id: 'td5', role: 'user', content: 'fix badge latest_bar_str bug', at: tMinutesAgo(60 * 19 - 2) },
+      { id: 'td6', role: 'tool', content: 'patch dashboard_chart.py: latest_bar_str now uses .astimezone(hkt).strftime() instead of formatting UTC as HKT. All 45 tests pass ✅', at: tMinutesAgo(60 * 19 - 2), durationMs: 760 },
+      { id: 'td7', role: 'assistant', content: 'Fixed. Dashboard badge now shows correct HKT. X軸時間亦已對齊。', at: tMinutesAgo(60 * 18 - 30), tokens: 62, durationMs: 640 },
+      { id: 'td8', role: 'system', content: 'Session closed · 26 messages', at: tMinutesAgo(60 * 18) },
+    ],
+  },
+
+  '20260710_103022_77ee99': {
+    sessionId: '20260710_103022_77ee99',
+    messages: [
+      { id: 'sk1', role: 'user', content: 'create skill for daily gold brief', at: tMinutesAgo(60 * 24 * 3) },
+      { id: 'sk2', role: 'assistant', content: 'Drafting xauusd-daily-brief SKILL.md…', at: tMinutesAgo(60 * 24 * 3) },
+      { id: 'sk3', role: 'tool', content: 'write_file: src/daily_xauusd_brief/SKILL.md\nfrontmatter: name, trigger, category, validations, steps, pitfalls', at: tMinutesAgo(60 * 24 * 3), durationMs: 1200 },
+      { id: 'sk4', role: 'assistant', content: 'SKILL.md scaffolded. Try running the skill to validate frontmatter + steps.', at: tMinutesAgo(60 * 24 * 3 - 10), tokens: 78, durationMs: 890 },
+      { id: 'sk5', role: 'system', content: 'Session archived · skill authoring try #3 · 14 messages', at: tMinutesAgo(60 * 24 * 3 - 20) },
+    ],
+  },
+
+  '20260708_143000_44ab12': {
+    sessionId: '20260708_143000_44ab12',
+    messages: [
+      { id: 'pc1', role: 'user', content: 'prompt caching research — what models support it?', at: tMinutesAgo(60 * 24 * 5) },
+      { id: 'pc2', role: 'assistant', content: 'Checking provider docs…', at: tMinutesAgo(60 * 24 * 5) },
+      { id: 'pc3', role: 'tool', content: 'Claude 3.5: cache-control beta, 200k context, $3.50/1M cache\nGPT-4o: not yet, 128k context\nGemini 1.5: 1M context, $0.50/1M cache', at: tMinutesAgo(60 * 24 * 5), durationMs: 2100 },
+      { id: 'pc4', role: 'assistant', content: 'Prompt caching is model-specific and expensive. Best for long repetitive contexts. For Hermes brief pipelines, standard 128k windows are sufficient for now.', at: tMinutesAgo(60 * 24 * 5 - 5), tokens: 140, durationMs: 1800 },
+      { id: 'pc5', role: 'system', content: 'Session archived · prompt caching research · 8 messages', at: tMinutesAgo(60 * 24 * 5 - 10) },
     ],
   },
 };
 
-/** Empty thread used when a session id has no matching mock. */
+/** Empty thread — returned for session ids not yet in chatThreadsBySession. */
 export const emptyThread: ChatThread = { sessionId: '', messages: [] };
+
+/* --------------------------------- Trace -------------------------------- */
 
 export interface TraceEntry {
   id: string;
@@ -241,6 +309,8 @@ export const traceMock: TraceEntry[] = [
   { id: 't5', startedAt: tMinutesAgo(2), durationMs: 1200, label: 'tools.file.write', status: 'pending', tool: 'tokens.css' },
 ];
 
+/* --------------------------------- Context -------------------------------- */
+
 export interface ContextStats {
   windowUsedPct: number;
   windowTotal: number;
@@ -259,7 +329,7 @@ export const contextMock: ContextStats = {
   toolsRegistered: 18,
 };
 
-/* ---------------------------- Dashboard ---------------------------- */
+/* ------------------------------ Dashboard ------------------------------ */
 
 export interface DashboardKPI {
   label: string;
@@ -335,12 +405,6 @@ export const placeholderChartBox = {
 
 /* ------------------------------ Status badges ------------------------------ */
 
-/**
- * Status tokens are exposed as a Record indexed by string. The union of
- * possible keys is broad (covers health / KPI / queue / trace / session /
- * chat role / outcome / predicted / kind). We keep them as plain strings so
- * new mock rows can re-use the same lookup without a TS narrowing chase.
- */
 export interface StatusMetaEntry {
   label: string;
   tone: 'ok' | 'warn' | 'err' | 'pending' | 'info';
