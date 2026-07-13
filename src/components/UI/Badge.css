@@ -1,0 +1,50 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.badge::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge.ok {
+  color: var(--status-ok);
+  background: var(--status-ok-bg);
+}
+.badge.warn {
+  color: var(--status-warn);
+  background: var(--status-warn-bg);
+}
+.badge.err {
+  color: var(--status-err);
+  background: var(--status-err-bg);
+}
+.badge.info {
+  color: var(--status-info);
+  background: var(--status-info-bg);
+}
+.badge.pending {
+  color: var(--status-pending);
+  background: var(--status-pending-bg);
+}
+
+.badge.no-dot::before {
+  display: none;
+}
+.badge.no-dot {
+  padding-left: 8px;
+}

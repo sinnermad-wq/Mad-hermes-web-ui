@@ -1,0 +1,35 @@
+.bottomnav {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .bottomnav {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    height: var(--bottomnav-h);
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border-base);
+  }
+}
+
+.bottomnav-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+.bottomnav-link:hover {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.bottomnav-link.active {
+  color: var(--accent-text);
+}
+.bottomnav-link.active svg {
+  color: var(--accent);
+}

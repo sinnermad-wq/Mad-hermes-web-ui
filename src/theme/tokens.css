@@ -1,0 +1,151 @@
+/* ============================================================
+ * HERMES Web UI — Design Tokens
+ * Operations console aesthetic. Neutral, high-contrast.
+ * No AI-startup gradients, no glassmorphism.
+ * ============================================================ */
+
+:root {
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Type */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "PingFang HK", "Microsoft JhengHei", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+  --text-3xl: 28px;
+
+  /* Layout dimensions */
+  --sidebar-w: 232px;
+  --sidebar-w-collapsed: 56px;
+  --topbar-h: 52px;
+  --bottomnav-h: 60px;
+  --detail-w: 360px;
+
+  /* Transitions */
+  --t-fast: 120ms ease-out;
+  --t-base: 180ms ease-out;
+
+  /* Borders / focus (light default, overridden in dark) */
+  --focus-ring: 0 0 0 2px var(--ring-color, rgba(59, 130, 246, 0.45));
+}
+
+/* ----------------------------------------
+ * Light theme (defaults — applied to :root)
+ * ---------------------------------------- */
+:root {
+  --bg-base: #f7f7f8;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f4f4f5;
+  --bg-surface-hover: #ececef;
+  --bg-overlay: rgba(15, 17, 21, 0.4);
+
+  --border-base: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --border-subtle: #f0f0f2;
+
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary: #71717a;
+  --text-inverse: #ffffff;
+  --text-link: #2563eb;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-bg: #eff6ff;
+  --accent-text: #1d4ed8;
+
+  --status-ok: #16a34a;
+  --status-warn: #d97706;
+  --status-err: #dc2626;
+  --status-info: #0284c7;
+  --status-pending: #71717a;
+
+  --status-ok-bg: #dcfce7;
+  --status-warn-bg: #fef3c7;
+  --status-err-bg: #fee2e2;
+  --status-info-bg: #e0f2fe;
+  --status-pending-bg: #f4f4f5;
+
+  --ring-color: rgba(37, 99, 235, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.06);
+
+  --scrollbar-thumb: #c4c4c8;
+  --scrollbar-track: transparent;
+}
+
+/* ----------------------------------------
+ * Dark theme
+ * ---------------------------------------- */
+:root[data-theme="dark"] {
+  --bg-base: #0e0f12;
+  --bg-surface: #15171c;
+  --bg-surface-2: #1b1d23;
+  --bg-surface-hover: #23252930;
+  --bg-overlay: rgba(0, 0, 0, 0.55);
+
+  --border-base: #26282f;
+  --border-strong: #34373e;
+  --border-subtle: #1d1f25;
+
+  --text-primary: #e4e4e7;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --text-inverse: #0e0f12;
+  --text-link: #60a5fa;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-bg: rgba(59, 130, 246, 0.14);
+  --accent-text: #93c5fd;
+
+  --status-ok: #4ade80;
+  --status-warn: #fbbf24;
+  --status-err: #f87171;
+  --status-info: #38bdf8;
+  --status-pending: #a1a1aa;
+
+  --status-ok-bg: rgba(74, 222, 128, 0.14);
+  --status-warn-bg: rgba(251, 191, 36, 0.14);
+  --status-err-bg: rgba(248, 113, 113, 0.14);
+  --status-info-bg: rgba(56, 189, 248, 0.14);
+  --status-pending-bg: rgba(161, 161, 170, 0.14);
+
+  --ring-color: rgba(59, 130, 246, 0.55);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.45);
+
+  --scrollbar-thumb: #3a3d44;
+  --scrollbar-track: transparent;
+}
+
+/* System pref fallback for first paint */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+  }
+}
