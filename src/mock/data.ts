@@ -181,6 +181,48 @@ export const chatThreadMock: ChatThread = {
   ],
 };
 
+/**
+ * Per-session thread lookup. Each row in `sessionsMock` has a matching entry
+ * so clicking a session in the Chat UI swaps conversation content. Missing
+ * ids fall back to `emptyThread` so the UI never blows up on a stale id.
+ */
+export const chatThreadsBySession: Record<string, ChatThread> = {
+  [chatThreadMock.sessionId]: chatThreadMock,
+  '20260713_090007_a3f1b2': {
+    sessionId: '20260713_090007_a3f1b2',
+    messages: [
+      { id: 'hkgm1', role: 'system', content: 'cron · Daily Hong Kong Briefing', at: tMinutesAgo(280) },
+      { id: 'hkgm2', role: 'assistant', content: 'Morning brief built from HKEX status + weather + headlines.', at: tMinutesAgo(279), tokens: 420, durationMs: 5400 },
+      { id: 'hkgm3', role: 'tool', content: 'hkex.status → Main market · opens 09:30', at: tMinutesAgo(279), durationMs: 410 },
+      { id: 'hkgm4', role: 'assistant', content: 'Sent to telegram (home 980366696).', at: tMinutesAgo(278), tokens: 110, durationMs: 900 },
+    ],
+  },
+  '20260713_083007_c4d5e6': {
+    sessionId: '20260713_083007_c4d5e6',
+    messages: [
+      { id: 'xg1', role: 'system', content: 'cron · Daily XAUUSD 黃金簡報', at: tMinutesAgo(310) },
+      { id: 'xg2', role: 'assistant', content: 'XAU/USD 08:31 HKT brief: bullish bias, watch 4080 support.', at: tMinutesAgo(309), tokens: 280, durationMs: 4200 },
+    ],
+  },
+  '20260712_214500_aa11bb': {
+    sessionId: '20260712_214500_aa11bb',
+    messages: [
+      { id: 'k8s1', role: 'user', content: 'cluster health?', at: tMinutesAgo(60 * 16) },
+      { id: 'k8s2', role: 'assistant', content: '3 nodes Ready, 1 cordoned. etcd quorum 3/3.', at: tMinutesAgo(60 * 16), tokens: 320, durationMs: 1800 },
+    ],
+  },
+  '20260712_181432_ff22cc': {
+    sessionId: '20260712_181432_ff22cc',
+    messages: [
+      { id: 'td1', role: 'user', content: 'twelve data bar 時區差 10 小時？', at: tMinutesAgo(60 * 19) },
+      { id: 'td2', role: 'assistant', content: '確認係佢哋 server clock 偏差，唔係我哋轉換 bug。已記錄 review。', at: tMinutesAgo(60 * 19), tokens: 96, durationMs: 1100 },
+    ],
+  },
+};
+
+/** Empty thread used when a session id has no matching mock. */
+export const emptyThread: ChatThread = { sessionId: '', messages: [] };
+
 export interface TraceEntry {
   id: string;
   startedAt: string;

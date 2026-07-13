@@ -33,7 +33,8 @@ import {
   pinnedSessions,
   archivedSessions,
   recentSessions,
-  chatThreadMock,
+  chatThreadsBySession,
+  emptyThread,
   traceMock,
   contextMock,
   overviewKpis,
@@ -48,6 +49,8 @@ export {
   archivedSessions,
   recentSessions,
   chatThreadMock,
+  chatThreadsBySession,
+  emptyThread,
   traceMock,
   contextMock,
   overviewKpis,
@@ -155,11 +158,11 @@ export interface ThreadResult {
 }
 
 export async function getThread(sessionId: string): Promise<ThreadResult> {
-  // Future: GET /api/sessions/:id/messages
-  void sessionId;
+  // Future: GET /api/sessions/:id/messages?before=&limit=
+  const thread = chatThreadsBySession[sessionId] ?? emptyThread;
   return {
-    sessionId: chatThreadMock.sessionId,
-    messages: [...chatThreadMock.messages],
+    sessionId: thread.sessionId || sessionId,
+    messages: thread.messages.map((m) => ({ ...m })),
   };
 }
 
