@@ -40,6 +40,7 @@ src/
 | [`docs/SSE.md`](docs/SSE.md) | Server-sent event envelope, event-vocabulary enum, per-event payload typings, and which panel consumes each event. |
 | [`docs/MINI_APP.md`](docs/MINI_APP.md) | Telegram Mini App auth flow (initData → JWT), trust boundary, v1 reservation status, and the v2 hook list. |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | `VITE_*` env vars, mode-switch matrix (mock / real / mini-app), and the localStorage key map. |
+| [`docs/web_ui_improvement_log.md`](docs/web_ui_improvement_log.md) | Ongoing UX feedback log — for accumulating day-to-day pain points before v0.3.0 planning. |
 
 Plus `.env.example` at the repo root — copy to `.env.local` to flip modes.
 
