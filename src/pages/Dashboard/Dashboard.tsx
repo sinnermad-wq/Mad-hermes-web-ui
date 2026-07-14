@@ -9,7 +9,8 @@ import {
   getOverview,
   getHealth,
   getReview,
-  useLiveQueue,
+  useQueue2,
+  LIVE_MODE,
   type DashboardKPI,
   type HealthRow,
   type ReviewRow,
@@ -73,12 +74,6 @@ function useReview() {
   useEffect(() => {
     getReview().then(setRows);
   }, []);
-  return rows;
-}
-function useQueue(addAlert?: (msg: string) => void) {
-  const [rows, setRows] = useState<QueueRow[]>([]);
-  // v2c: open SSE — useLiveQueue handles initial snapshot + live updates
-  useLiveQueue(setRows, addAlert);
   return rows;
 }
 
@@ -189,7 +184,7 @@ function Review() {
 
 function Queue() {
   const [alerts, setAlerts] = useState<string[]>([]);
-  const rows = useQueue((msg) => setAlerts((prev) => [msg, ...prev].slice(0, 5)));
+  const { rows, esState } = useQueue2((msg) => setAlerts((prev) => [msg, ...prev].slice(0, 5)));
   const cols: Column<QueueRow>[] = useMemo(
     () => [
       {
@@ -217,6 +212,31 @@ function Queue() {
               ⚠ {a}
             </div>
           ))}
+        </div>
+      )}
+      {/* SSE state notice */}
+      {LIVE_MODE && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          {esState === 'connecting' && (
+            <span className="badge info no-dot" style={{ fontSize: 'var(--text-xs)' }}>
+              ↻ Connecting to queue...
+            </span>
+          )}
+          {esState === 'open' && (
+            <span className="badge ok no-dot" style={{ fontSize: 'var(--text-xs)' }}>
+              ● Live
+            </span>
+          )}
+          {esState === 'reconnecting' && (
+            <span className="badge warn no-dot" style={{ fontSize: 'var(--text-xs)' }}>
+              ↻ Reconnecting — using REST fallback
+            </span>
+          )}
+          {esState === 'closed' && (
+            <span className="badge no-dot" style={{ fontSize: 'var(--text-xs)', color: 'var(--status-info)', background: 'var(--status-info-bg)' }}>
+              ✕ Live off — data via REST
+            </span>
+          )}
         </div>
       )}
       <div className="queue-table">

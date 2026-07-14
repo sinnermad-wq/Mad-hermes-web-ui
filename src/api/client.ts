@@ -23,7 +23,7 @@
  * v2c scope: GET /api/events SSE
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   sessionsMock,
@@ -578,4 +578,126 @@ export function useLiveQueue(
 
     return cleanup;
   }, [setRows, addAlert]);
+}
+
+/**
+ * Whether VITE_API_BASE_URL is set — true only when the real backend is active.
+ * Use this to guard SSE-only UI elements.
+ */
+export const LIVE_MODE = Boolean(import.meta.env.VITE_API_BASE_URL);
+
+/**
+ * useLiveTraceEx — same as useLiveTrace but also returns the SSE connection state.
+ * Use this when you need to show a live/reconnecting/closed badge in the UI.
+ *
+ * Usage:
+ *   const esState = useLiveTraceEx(sessionId, setTrace);
+ */
+export function useLiveTraceEx(
+  sessionId: string | null,
+  setTrace: React.Dispatch<React.SetStateAction<TraceEntry[]>>,
+): EsState {
+  const [esState, setEsState] = useState<EsState>('connecting');
+  // Store setter in ref so callbacks can call it without needing it in deps
+  const setEsStateRef = useRef<typeof setEsState | null>(null);
+  setEsStateRef.current = setEsState;
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    getTrace(sessionId).then((initial) => setTrace(initial));
+
+    const cleanup = openEventSource({
+      sessionId,
+      onTraceDelta: ({ step }) => {
+        setTrace((prev) => {
+          if (prev.some((e) => e.id === step.id)) return prev;
+          return [...prev, step];
+        });
+      },
+      onTraceDone: () => {
+        getTrace(sessionId).then((fresh) => setTrace(fresh));
+      },
+      onStateChange: (s) => {
+        (setEsStateRef.current as typeof setEsState)(s);
+      },
+    });
+
+    return () => {
+      setEsState('closed');
+      cleanup();
+    };
+  }, [sessionId, setTrace]);
+
+  return esState;
+}
+
+/**
+ * useLiveQueueEx — same as useLiveQueue but also returns the SSE connection state.
+ *
+ * Usage:
+ *   const esState = useLiveQueueEx(setRows, addAlert);
+ *   // esState: 'connecting' | 'open' | 'reconnecting' | 'closed'
+ */
+export function useLiveQueueEx(
+  setRows: React.Dispatch<React.SetStateAction<QueueRow[]>>,
+  addAlert?: (msg: string) => void,
+): EsState {
+  const [esState, setEsState] = useState<EsState>('connecting');
+  const setEsStateRef = useRef<typeof setEsState | null>(null);
+  setEsStateRef.current = setEsState;
+
+  useEffect(() => {
+    getQueue().then((rows) => setRows(rows));
+
+    const cleanup = openEventSource({
+      onQueueSnapshot: ({ rows }) => setRows(rows),
+      onQueueRow: ({ row }) => {
+        setRows((prev) => {
+          const idx = prev.findIndex((r) => r.id === row.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = row;
+            return next;
+          }
+          return [...prev, row];
+        });
+      },
+      onQueueAlert: ({ row, reason, severity }) => {
+        addAlert?.(`[${severity.toUpperCase()}] ${row.name}: ${reason}`);
+        setRows((prev) => {
+          const idx = prev.findIndex((r) => r.id === row.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = row;
+            return next;
+          }
+          return prev;
+        });
+      },
+      onStateChange: (s) => {
+        (setEsStateRef.current as typeof setEsState)(s);
+      },
+    });
+
+    return () => {
+      setEsState('closed');
+      cleanup();
+    };
+  }, [setRows, addAlert]);
+
+  return esState;
+}
+
+/**
+ * useQueue2 — convenience wrapper for the Dashboard's useQueue pattern.
+ * Returns { rows, esState } so callers can render both data and SSE status.
+ *
+ * Usage:
+ *   const { rows, esState } = useQueue2(addAlert);
+ */
+export function useQueue2(addAlert?: (msg: string) => void) {
+  const [rows, setRows] = useState<QueueRow[]>([]);
+  const esState = useLiveQueueEx(setRows, addAlert);
+  return { rows, esState };
 }

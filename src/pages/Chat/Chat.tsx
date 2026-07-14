@@ -11,7 +11,8 @@ import {
   postMessage,
   listSessions,
   approveToolEvent,
-  useLiveTrace,
+  useLiveTraceEx,
+  LIVE_MODE,
   type SessionItem,
   type ChatMessage,
   type TraceEntry,
@@ -70,8 +71,8 @@ export function ChatPage() {
     getContext(activeId).then(setContextInfo);
   }, [activeId]);
 
-  // v2c: open SSE trace stream for this session
-  useLiveTrace(activeId, setTrace);
+  // v2c: open SSE trace stream for this session; also exposes connection state
+  const traceEsState = useLiveTraceEx(activeId, setTrace);
 
   useEffect(() => {
     if (convoRef.current) convoRef.current.scrollTop = convoRef.current.scrollHeight;
@@ -290,7 +291,34 @@ export function ChatPage() {
       </div>
       <div className="detail-body" role="tabpanel" aria-label={`${tab} panel`}>
         {tab === 'trace' && (
-          <DataTable rows={trace} columns={traceCols} emptyHint="No trace entries yet." />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+            {/* SSE state notice */}
+            {LIVE_MODE && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 22 }}>
+                {traceEsState === 'connecting' && (
+                  <span className="badge info no-dot" style={{ fontSize: 'var(--text-xs)' }}>
+                    ↻ Connecting...
+                  </span>
+                )}
+                {traceEsState === 'open' && (
+                  <span className="badge ok no-dot" style={{ fontSize: 'var(--text-xs)' }}>
+                    ● Live
+                  </span>
+                )}
+                {traceEsState === 'reconnecting' && (
+                  <span className="badge warn no-dot" style={{ fontSize: 'var(--text-xs)' }}>
+                    ↻ Reconnecting — data via REST fallback
+                  </span>
+                )}
+                {traceEsState === 'closed' && (
+                  <span className="badge no-dot" style={{ fontSize: 'var(--text-xs)', color: 'var(--status-info)', background: 'var(--status-info-bg)' }}>
+                    ✕ Live off — showing REST data
+                  </span>
+                )}
+              </div>
+            )}
+            <DataTable rows={trace} columns={traceCols} emptyHint="No trace entries yet." />
+          </div>
         )}
 
         {tab === 'context' && contextInfo && (
