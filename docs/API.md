@@ -283,10 +283,50 @@ Client wrapper standardizes to `ApiError { status: number; message: string }` �
 
 ## v1 → v2 swap checklist
 
-1. Add `VITE_API_BASE_URL=http://localhost:8000` to `.env.local`.
-2. Rewrite each `async function` in `src/api/client.ts` from `return mock` to `fetch(...)`-backed implementation. No page/hook/component change.
-3. Wire SSE in `src/hooks/useLiveSession.ts` (new file, reserved for v2).
-4. (Optional) flip `VITE_MINI_APP=1` to add Telegram auth headers.
-5. Done. No public-API type changes.
+v2c is the current implementation. To move from mock to real backend:
+
+1. Set `VITE_API_BASE_URL=http://localhost:8080` in `.env.local`.
+2. (Optional) Set `VITE_MINI_APP=1` to enable Telegram auth headers.
+3. Start the API server: `python -m uvicorn api_server.main:app --port 8080 --host 0.0.0.0`.
+4. Done. `useLiveTrace()` / `useLiveQueue()` in `client.ts` and the SSE hooks handle streaming automatically.
 
 See `docs/SSE.md` and `docs/MINI_APP.md` for the streaming + auth halves.
+
+---
+
+## SSE — `GET /api/events`
+
+Server-Sent Events stream. Open in browser via `EventSource` (or use the hooks below).
+
+```
+GET /api/events?session=:id
+Accept: text/event-stream
+```
+
+**Query params:**
+| Param | Description |
+|---|---|
+| `session` | Optional. Scopes `trace.delta` / `trace.done` to this session. Queue events always emitted to all clients. |
+
+**Event types emitted:** `queue.snapshot`, `queue.row`, `queue.alert`, `trace.delta`, `trace.done`. See `docs/SSE.md` for full payload shapes.
+
+**Heartbeat:** server sends `: ping\n\n` every 15s.
+
+**Frontend hooks (in `src/api/client.ts`):**
+```ts
+// Chat Trace — replaces one-shot getTrace()
+useLiveTrace(sessionId, setTrace);
+
+// Dashboard Queue — replaces one-shot getQueue()
+useLiveQueue(setRows, addAlertCallback);
+```
+
+Direct `EventSource` usage:
+```ts
+const es = new EventSource('/api/events?session=' + sessionId);
+es.addEventListener('trace.delta', (e) => { const p = JSON.parse(e.data); /* TraceDeltaPayload */ });
+es.addEventListener('trace.done',  (e) => { const p = JSON.parse(e.data); /* TraceDonePayload  */ });
+es.addEventListener('queue.snapshot', (e) => { const p = JSON.parse(e.data); /* QueueSnapshotPayload */ });
+es.addEventListener('queue.row',   (e) => { const p = JSON.parse(e.data); /* QueueRowPayload   */ });
+es.addEventListener('queue.alert', (e) => { const p = JSON.parse(e.data); /* QueueAlertPayload  */ });
+```

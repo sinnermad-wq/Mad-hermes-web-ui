@@ -719,6 +719,7 @@ async def post_message(session_id: str, request: Request):
             raise HTTPException(
                 status_code=503,
                 detail="database is locked — Hermes is writing. Try again in a moment.",
+                headers={"Retry-After": "5"},
             )
         raise  # re-raise unexpected OperationalError
     finally:

@@ -1,6 +1,6 @@
 # HERMES Web UI · Configuration
 
-v1 ships with **mocks only** — no real network calls. When the FastAPI backend lands, flip a single env var to switch the data source. The `src/api/client.ts` module is the single place that needs to change.
+v2c ships with both mock mode (default) and real backend mode (via `VITE_API_BASE_URL`). When the env var is unset, all API calls resolve against `src/mock/data.ts`. When set, they route to the FastAPI server. The `src/api/client.ts` module is the single place that handles the switch.
 
 ## Front-end env vars
 
@@ -36,10 +36,10 @@ cp .env.example .env.local
 
 `VITE_API_BASE_URL` is empty / missing. Every exported function in `src/api/client.ts` resolves synchronously against `src/mock/data.ts`. No network IO. Safe offline.
 
-### Mode 2 — Real backend
+### Mode 2 — Real backend (v2c)
 
 ```env
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8080
 ```
 
 Every `listSessions()` / `getThread()` / `getTrace()` / `getContext()` / `postMessage()` / `approveToolEvent()` / `getOverview()` / `getHealth()` / `getReview()` / `getQueue()` / `getDashboardBlocks()` call gets rewritten to:
