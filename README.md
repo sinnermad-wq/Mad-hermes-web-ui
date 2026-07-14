@@ -1,6 +1,6 @@
-# HERMES Web UI · v2c
+# HERMES Web UI · v0.2.0
 
-Operations-console shell for HERMES — desktop + mobile. v1 is **UI only**: no backend, no auth, no DB wiring. All data is mock. Designed so a FastAPI backend, dashboard blocks, and a Telegram Mini App can drop in later without rewrites.
+Operations-console shell for HERMES — desktop + mobile. v0.2.0 wires a FastAPI backend (read + write), REST API, and SSE live updates on top of a React 19 + TypeScript SPA. Default mode still ships with mock data; flip `VITE_API_BASE_URL` to connect to the real Hermes state.db.
 
 ## Run
 
@@ -54,7 +54,7 @@ Plus `.env.example` at the repo root — copy to `.env.local` to flip modes.
 ```env
 # .env.local — see .env.example
 VITE_API_BASE_URL=                # empty → mocks (v1 default)
-VITE_API_BASE_URL=http://localhost:8000   # real backend (v2)
+VITE_API_BASE_URL=http://localhost:8080   # real backend (v2)
 VITE_MINI_APP=1                   # enable Mini App auth header (v2)
 ```
 
@@ -252,4 +252,4 @@ Manual checks on http://localhost:5173:
 
 ## Status
 
-v1 ships April 2026. v2 wiring lives behind the reservations in `src/api/client.ts` and the contract docs in `docs/`.
+v0.2.0 (July 2026) is the current release. Full stack: React 19 SPA + FastAPI backend + SQLite. See CHANGELOG.md for what changed since v0.1.
