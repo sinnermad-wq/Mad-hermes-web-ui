@@ -50,6 +50,7 @@ export function ChatPage() {
   const [contextInfo, setContextInfo] = useState<Awaited<ReturnType<typeof getContext>> | null>(null);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const convoRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -76,20 +77,38 @@ export function ChatPage() {
 
   const submit = async () => {
     if (!input.trim() || !activeId) return;
+    setSendError(null);
     setSending(true);
     const text = input.trim();
     setInput('');
-    const userMsg: ChatMessage = {
-      id: `local_${Date.now()}`,
+
+    // Optimistic append — remove if the server rejects
+    const tempId = `local_${Date.now()}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
       role: 'user',
       content: text,
       at: new Date().toISOString(),
-      tokens: text.split(/\s+/).length,
     };
-    setMessages((m) => [...m, userMsg]);
-    const reply = await postMessage(activeId, text);
-    setMessages((m) => [...m, reply]);
-    setSending(false);
+    setMessages((m) => [...m, optimisticMsg]);
+
+    try {
+      await postMessage(activeId, text);
+      // Refresh thread after a short delay so any Hermes assistant reply
+      // (written to state.db async) has a window to appear before we re-read.
+      await new Promise((r) => setTimeout(r, 600));
+      const refreshed = await getThread(activeId);
+      setMessages(refreshed.messages);
+    } catch (err) {
+      // Rollback optimistic message
+      setMessages((m) => m.filter((msg) => msg.id !== tempId));
+      setInput(text); // restore input so user doesn't lose their message
+      setSendError(err instanceof Error ? err.message : String(err));
+      // Auto-clear error after 4s
+      setTimeout(() => setSendError(null), 4000);
+    } finally {
+      setSending(false);
+    }
   };
 
   const activeSession = useMemo(
@@ -207,6 +226,11 @@ export function ChatPage() {
             submit();
           }}
         >
+          {sendError && (
+              <p role="alert" style={{ color: 'var(--color-err)', fontSize: 'var(--text-sm)', margin: '4px 0 0' }}>
+                {sendError}
+              </p>
+            )}
           <textarea
             placeholder="Message Hermes…"
             value={input}

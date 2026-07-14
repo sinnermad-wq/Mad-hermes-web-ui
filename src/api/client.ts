@@ -200,16 +200,35 @@ export async function postMessage(
   sessionId: string,
   content: string,
 ): Promise<ChatMessage> {
-  // v2a: not wired — backend slot reserved, returns stub
-  void sessionId;
-  return {
-    id: `m_${Date.now()}`,
-    role: 'assistant',
-    content: 'stub: send-message not wired in v2a. Reserved for v2b.',
-    at: new Date().toISOString(),
-    tokens: content.length,
-    durationMs: 0,
-  };
+  // v2b: POST /api/sessions/:id/messages
+  // Note: Hermes processes asynchronously; response message appears via
+  // polling GET /messages or SSE (v2c). The returned ChatMessage here is
+  // the *user* message just written, not the assistant reply.
+  const BASE = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (!BASE) {
+    // Fallback: echo stub (v1 mock)
+    const msg: ChatMessage = {
+      id: `m_${Date.now()}`,
+      role: 'assistant',
+      content: 'stub: set VITE_API_BASE_URL for real Hermes sessions.',
+      at: new Date().toISOString(),
+    };
+    await new Promise((r) => setTimeout(r, 500));
+    return msg;
+  }
+  const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); detail = j.detail || detail; } catch { /* ignore */ }
+    throw new Error(`postMessage failed: ${detail}`);
+  }
+  // Response is the created user message — return it so the caller can
+  // append it to the thread optimistically.
+  return res.json() as Promise<ChatMessage>;
 }
 
 /* ------------------------ Trace + Context ------------------------ */

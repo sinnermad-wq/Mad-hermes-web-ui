@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hermes-api")
 
@@ -81,6 +81,22 @@ def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")  # best-effort; read-only ok
+    return conn
+
+
+def _get_wconn() -> sqlite3.Connection:
+    """Open a read-write connection to state.db for write operations.
+
+    Note: Hermes may hold the DB in exclusive locking mode. If writes fail
+    with 'database is locked', Hermes needs to be stopped first, or the
+    approach should be changed to Hermes ACP subprocess bridging (v2c).
+    """
+    if not Path(DB_PATH).exists():
+        raise HTTPException(503, f"state.db not found at {DB_PATH}")
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rwc", uri=True)
+    conn.row_factory = sqlite3.Row
+    # WAL mode allows concurrent reads; write lock still acquired on write
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -628,6 +644,74 @@ def dashboard_queue() -> dict:
             })
 
         return {"rows": queue_rows}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions/:id/messages — send a message to a session
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/sessions/{session_id}/messages")
+async def post_message(session_id: str, request: Request):
+    """
+    Write a user message into the Hermes state.db.
+
+    Note: Hermes processes messages asynchronously via the ACP adapter
+    (stdio transport). The assistant reply is written to state.db when
+    Hermes completes the turn. Callers should poll GET messages or wait
+    for SSE (v2c) to receive the response.
+
+    Request body:  { "content": "your message" }
+    Response:      ChatMessage (the inserted user message, 201 Created)
+    Errors:        404 — session not found
+                   400 — empty content
+    """
+    body = await request.json()
+    content = (body or {}).get("content", "").strip()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    conn = _get_wconn()
+    try:
+        # Verify session exists
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        # Insert the user message
+        msg_id = int(time.time() * 1e6)  # microseconds: unique, incrementing
+        ts = time.time()  # Unix epoch (REAL, matches messages.timestamp)
+        conn.execute(
+            """
+            INSERT INTO messages (id, session_id, role, content, timestamp, active)
+            VALUES (?, ?, 'user', ?, ?, 1)
+            """,
+            (msg_id, session_id, content, ts),
+        )
+
+        # Increment message_count on the session
+        conn.execute(
+            "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+            (session_id,),
+        )
+        conn.commit()
+
+        logger.info("Message saved for session %s: msg_id=%s", session_id, msg_id)
+        return JSONResponse(
+            {
+                "id": str(msg_id),
+                "role": "user",
+                "content": content,
+                "at": _unix_to_iso(ts),
+                "tokens": len(content.split()),
+            },
+            status_code=201,
+        )
     finally:
         conn.close()
 

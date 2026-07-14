@@ -1,4 +1,4 @@
-# HERMES Web UI · v1
+# HERMES Web UI · v2b
 
 Operations-console shell for HERMES — desktop + mobile. v1 is **UI only**: no backend, no auth, no DB wiring. All data is mock. Designed so a FastAPI backend, dashboard blocks, and a Telegram Mini App can drop in later without rewrites.
 
@@ -97,7 +97,42 @@ Then `npm run dev`. All 8 read endpoints work:
 | `GET /api/dashboard/review` | ✅ |
 | `GET /api/dashboard/queue` | ✅ |
 
-Not wired in v2a: SSE, send-message, tool approval, Mini App auth.
+### v2b — Chat write path (this branch)
+
+**Scope:** POST /api/sessions/:id/messages + Chat UI submit handler.
+
+**Start the API server:**
+```bash
+# Terminal 1 — API server (needs Hermes state.db write access)
+python -m uvicorn api_server.main:app --port 8080 --host 0.0.0.0
+# Or use the helper:
+start-api.bat        # Windows
+./start-api.sh       # Unix/macOS
+```
+
+**Connect the web UI** — same `.env.local` as v2a:
+```
+VITE_API_BASE_URL=http://localhost:8080
+```
+
+**Write endpoint:**
+
+| Method + Path | Status | Notes |
+|---|---|---|
+| `POST /api/sessions/:id/messages` | ✅ | Writes to Hermes state.db; Hermes processes asynchronously |
+
+**Note on async response:** Hermes processes messages via the ACP adapter (stdio transport). After POST succeeds, the assistant reply is written to state.db by Hermes asynchronously. Callers should:
+- Poll `GET /api/sessions/:id/messages` after a short delay to pick up the reply
+- Or wait for SSE (v2c) for real-time push
+
+**UX flow:**
+1. User types in Chat textarea → Enter or Send button
+2. `sending=true` → input cleared → user message shown immediately (optimistic)
+3. POST /api/sessions/:id/messages → 201 on success, 400/404/500 on error
+4. On success: 600ms delay → thread refresh → full thread including Hermes reply
+5. On error: optimistic message rolled back, input restored, error shown for 4s
+
+**Not wired in v2b:** SSE, Mini App auth, pinned-unread persistence, dashboard write path.
 
 ## DashboardBlockSpec alignment
 
