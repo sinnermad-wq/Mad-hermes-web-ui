@@ -314,6 +314,116 @@ def get_session(session_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Session management (rename / archive / delete)
+# ---------------------------------------------------------------------------
+
+@app.patch("/api/sessions/{session_id}")
+def update_session(
+    session_id: str,
+    request: Request,
+) -> dict:
+    """
+    Partially update a session's fields.
+
+    Supported body fields:
+      title     string   → UPDATE sessions SET title = ?
+      archived  bool     → UPDATE sessions SET archived = 1|0
+
+    Note: `pinned` is not stored in Hermes state.db. The frontend maintains
+    pinned state locally (localStorage). Do NOT add a `pinned` column here
+    without a corresponding Hermes migration.
+
+    Errors: 404 — session not found
+            422 — empty body
+    """
+    body = request._json() or {}
+    if not body:
+        raise HTTPException(status_code=422, detail="request body required")
+
+    conn = _get_wconn()
+    try:
+        # Verify session exists
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        sets, params = [], []
+        if "title" in body:
+            sets.append("title = ?")
+            params.append(str(body["title"]).strip())
+
+        if "archived" in body:
+            sets.append("archived = ?")
+            params.append(1 if body["archived"] else 0)
+
+        # TODO: add `pinned` column to sessions table + Hermes migration
+        # before uncommenting the block below:
+        # if "pinned" in body:
+        #     sets.append("pinned = ?")
+        #     params.append(1 if body["pinned"] else 0)
+
+        if not sets:
+            raise HTTPException(status_code=422, detail="no supported fields in body")
+
+        params.append(session_id)
+        conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower():
+            raise HTTPException(
+                status_code=503,
+                detail="database is locked",
+                headers={"Retry-After": "5"},
+            )
+        raise
+    finally:
+        conn.close()
+
+    # Return updated session
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return _row_to_session(dict(row))
+    finally:
+        conn.close()
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str):
+    """
+    Hard-delete a session and all its messages from state.db.
+
+    Errors: 404 — session not found
+            501 — not implemented (no Hermes delete mechanism — see TODO below)
+
+    TODO: Hermes does not currently expose a session delete API. This endpoint
+    is a stub that returns 501 until Hermes provides a proper delete mechanism.
+    A Hermes migration + API adapter change is required before enabling.
+    """
+    # TODO: uncomment once Hermes provides delete_session RPC
+    # conn = _get_wconn()
+    # try:
+    #     row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    #     if not row:
+    #         raise HTTPException(status_code=404, detail="session not found")
+    #     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+    #     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    #     conn.commit()
+    # except finally: ...
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "DELETE not implemented — Hermes has no session delete mechanism yet. "
+            "Use archive instead; deleted sessions cannot be recovered."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
 

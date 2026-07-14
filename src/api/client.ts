@@ -113,13 +113,18 @@ export function getSseUrl(): string {
  * - Logs mismatches in dev mode
  * - Automatically parses JSON
  */
-async function apiFetch<T>(path: string): Promise<T | null> {
+async function apiFetch<T>(
+  path: string,
+  opts: { method?: string; body?: string } = {},
+): Promise<T | null> {
   const base = getApiBaseUrl();
   if (!base) return null;
   try {
     const res = await fetch(`${base}${path}`, {
+      method: opts.method ?? 'GET',
       signal: AbortSignal.timeout(10_000),
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: opts.body,
     });
     if (!res.ok) {
       console.warn(`[api] ${res.status} ${path}`);
@@ -172,6 +177,77 @@ export async function getSession(id: string): Promise<SessionItem | null> {
   }
   const data = await apiFetch<SessionItem>(`/api/sessions/${encodeURIComponent(id)}`);
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+export interface SessionPatch {
+  title?: string;
+  archived?: boolean;
+  // NOTE: pinned is NOT sent to backend — stored locally only (see usePinnedSessions)
+  pinned?: never;
+}
+
+export async function updateSession(
+  id: string,
+  patch: SessionPatch,
+): Promise<SessionItem | null> {
+  if (getMode() === 'mock') {
+    // Mock: update in-memory and return updated item
+    const idx = sessionsMock.findIndex((s) => s.id === id);
+    if (idx === -1) return null;
+    const updated = { ...sessionsMock[idx], ...patch };
+    sessionsMock[idx] = updated;
+    return updated;
+  }
+  const data = await apiFetch<SessionItem>(
+    `/api/sessions/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify(patch) },
+  );
+  return data;
+}
+
+export async function deleteSession(id: string): Promise<boolean> {
+  if (getMode() === 'mock') {
+    const idx = sessionsMock.findIndex((s) => s.id === id);
+    if (idx !== -1) sessionsMock.splice(idx, 1);
+    return true;
+  }
+  const data = await apiFetch<{ detail: string }>(
+    `/api/sessions/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+  // 501 → backend doesn't support delete yet (expected — use archive instead)
+  return data === null;
+}
+
+// ---------------------------------------------------------------------------
+// Pinned sessions — localStorage only (no backend support yet)
+// ---------------------------------------------------------------------------
+
+const PINNED_KEY = 'hermes_web_ui_pinned_sessions';
+
+export function getPinnedIds(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(PINNED_KEY) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+
+export function setPinnedIds(ids: string[]): void {
+  localStorage.setItem(PINNED_KEY, JSON.stringify(ids));
+}
+
+export function togglePinned(id: string): string[] {
+  const pinned = new Set(getPinnedIds());
+  if (pinned.has(id)) pinned.delete(id);
+  else pinned.add(id);
+  const result = Array.from(pinned);
+  setPinnedIds(result);
+  return result;
 }
 
 /* ------------------------ Chat ------------------------ */

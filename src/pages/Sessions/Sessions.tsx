@@ -1,9 +1,28 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pin, Archive, RotateCw, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  MoreHorizontal,
+  Pin,
+  PinOff,
+  Archive,
+  ArchiveRestore,
+  Pencil,
+  Trash2,
+  X,
+  Search,
+  Loader,
+  AlertCircle,
+} from 'lucide-react';
 import { Tabs, TabStrip } from '../../components/UI/Tabs';
 import { StatusBadge, type BadgeTone } from '../../components/UI/Badge';
-import { EmptyState } from '../../components/UI/Placeholder';
-import { listSessions, type SessionItem } from '../../api/client';
+import {
+  listSessions,
+  updateSession,
+  deleteSession,
+  togglePinned,
+  getPinnedIds,
+  type SessionItem,
+  type ListSessionsOpts,
+} from '../../api/client';
 import './Sessions.css';
 
 type SessionsTab = 'recent' | 'pinned' | 'archived';
@@ -13,6 +32,10 @@ const tabs = [
   { id: 'pinned' as const, label: 'Pinned' },
   { id: 'archived' as const, label: 'Archived' },
 ];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function fmtRelative(iso: string) {
   const ms = Date.now() - new Date(iso).getTime();
@@ -33,46 +56,294 @@ function sourceTone(s: SessionItem['source']): BadgeTone {
   return 'pending';
 }
 
-export function SessionsPage() {
-  const [tab, setTab] = useState<SessionsTab>('recent');
-  const [items, setItems] = useState<SessionItem[]>([]);
+// ---------------------------------------------------------------------------
+// Delete confirmation modal
+// ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    listSessions({ filter: tab }).then(setItems);
-  }, [tab]);
+interface DeleteConfirmProps {
+  session: SessionItem;
+  onConfirm: (id: string) => Promise<void>;
+  onClose: () => void;
+}
 
-  const byFilter = useMemo(() => items, [items]);
+function DeleteConfirmModal({ session, onConfirm, onClose }: DeleteConfirmProps) {
+  const [loading, setLoading] = useState(false);
+
+  async function handleDelete() {
+    setLoading(true);
+    try {
+      await onConfirm(session.id);
+      onClose();
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <div className="sessions-page">
-      <TabStrip
-        title="Sessions"
-        sub={`filter:${tab} · ${byFilter.length} rows`}
-        right={<Tabs<SessionsTab> items={tabs} value={tab} onChange={setTab} />}
-      />
-      <div className="sessions-grid">
-        {byFilter.length === 0 ? (
-          <EmptyState
-            title={tab === 'pinned' ? 'No pinned sessions yet.' : tab === 'archived' ? 'Archive is empty.' : 'No recent sessions.'}
-            hint="Pin from the chat list; archive when stale."
-          />
-        ) : (
-          byFilter.map((s) => (
-            <SessionCard key={s.id} session={s} />
-          ))
-        )}
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">Delete session?</span>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <p>
+            This will <strong>permanently delete</strong>{' '}
+            <em>"{session.title}"</em> and all its messages.
+          </p>
+          <p className="modal-warning">
+            <AlertCircle size={14} /> This cannot be undone.
+          </p>
+          <p className="modal-hint">
+            Consider archiving instead — archived sessions are hidden but not
+            deleted.
+          </p>
+        </div>
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button
+            className="btn-danger"
+            onClick={handleDelete}
+            disabled={loading}
+          >
+            {loading ? 'Deleting…' : 'Delete permanently'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function SessionCard({ session }: { session: SessionItem }) {
+// ---------------------------------------------------------------------------
+// Rename modal
+// ---------------------------------------------------------------------------
+
+interface RenameModalProps {
+  session: SessionItem;
+  onSave: (id: string, title: string) => Promise<void>;
+  onClose: () => void;
+}
+
+function RenameModal({ session, onSave, onClose }: RenameModalProps) {
+  const [value, setValue] = useState(session.title);
+  const [loading, setLoading] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  async function handleSave() {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === session.title) {
+      onClose();
+      return;
+    }
+    setLoading(true);
+    try {
+      await onSave(session.id, trimmed);
+      onClose();
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="session-card">
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">Rename session</span>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <input
+            ref={inputRef}
+            className="rename-input"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSave();
+              if (e.key === 'Escape') onClose();
+            }}
+            maxLength={120}
+            autoFocus
+          />
+        </div>
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            onClick={handleSave}
+            disabled={loading || !value.trim()}
+          >
+            {loading ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Session actions menu
+// ---------------------------------------------------------------------------
+
+interface SessionActionsProps {
+  session: SessionItem;
+  isPinned: boolean;
+  onRename: (s: SessionItem) => void;
+  onArchive: (s: SessionItem) => void;
+  onUnarchive: (s: SessionItem) => void;
+  onPin: (id: string) => void;
+  onDelete: (s: SessionItem) => void;
+}
+
+function SessionActions({
+  session,
+  isPinned,
+  onRename,
+  onArchive,
+  onUnarchive,
+  onPin,
+  onDelete,
+}: SessionActionsProps) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const isArchived = session.status === 'archived';
+
+  return (
+    <div className="session-actions" ref={menuRef}>
+      <button
+        className="icon-btn"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Session actions"
+        aria-expanded={open}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+
+      {open && (
+        <div className="actions-menu">
+          {/* Rename */}
+          <button
+            className="menu-item"
+            onClick={() => {
+              setOpen(false);
+              onRename(session);
+            }}
+          >
+            <Pencil size={13} /> Rename
+          </button>
+
+          {/* Pin / Unpin */}
+          <button
+            className="menu-item"
+            onClick={() => {
+              setOpen(false);
+              onPin(session.id);
+            }}
+          >
+            {isPinned ? <PinOff size={13} /> : <Pin size={13} />}
+            {isPinned ? 'Unpin' : 'Pin'}
+          </button>
+
+          {/* Archive / Unarchive */}
+          {isArchived ? (
+            <button
+              className="menu-item"
+              onClick={() => {
+                setOpen(false);
+                onUnarchive(session);
+              }}
+            >
+              <ArchiveRestore size={13} /> Restore
+            </button>
+          ) : (
+            <button
+              className="menu-item"
+              onClick={() => {
+                setOpen(false);
+                onArchive(session);
+              }}
+            >
+              <Archive size={13} /> Archive
+            </button>
+          )}
+
+          {/* Delete */}
+          <button
+            className="menu-item menu-item-danger"
+            onClick={() => {
+              setOpen(false);
+              onDelete(session);
+            }}
+          >
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Session card
+// ---------------------------------------------------------------------------
+
+interface SessionCardProps {
+  session: SessionItem;
+  isPinned: boolean;
+  onRename: (s: SessionItem) => void;
+  onArchive: (s: SessionItem) => void;
+  onUnarchive: (s: SessionItem) => void;
+  onPin: (id: string) => void;
+  onDelete: (s: SessionItem) => void;
+}
+
+function SessionCard({
+  session,
+  isPinned,
+  onRename,
+  onArchive,
+  onUnarchive,
+  onPin,
+  onDelete,
+}: SessionCardProps) {
+  return (
+    <div className={`session-card${isPinned ? ' session-card--pinned' : ''}`}>
       <div className="title-row">
-        <span className="title">{session.title}</span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <StatusBadge tone={sourceTone(session.source)} label={session.source} />
+        <span className="title" title={session.title}>
+          {session.title}
+        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {isPinned && (
+            <Pin size={12} className="pin-icon" aria-label="Pinned" />
+          )}
+          <StatusBadge
+            tone={sourceTone(session.source)}
+            label={session.source}
+          />
           {session.unread ? (
             <span className="badge info no-dot" style={{ fontSize: 10, padding: '0 6px' }}>
               {session.unread} new
@@ -80,6 +351,7 @@ function SessionCard({ session }: { session: SessionItem }) {
           ) : null}
         </div>
       </div>
+
       <div className="meta">
         <span>{session.id}</span>
         <span>·</span>
@@ -87,32 +359,223 @@ function SessionCard({ session }: { session: SessionItem }) {
         <span>·</span>
         <span>{fmtRelative(session.lastActiveAt)}</span>
       </div>
+
       <div className="preview">{session.preview}</div>
+
       <div className="card-foot">
         <StatusBadge
-          tone={session.status === 'active' ? 'ok' : session.status === 'error' ? 'err' : 'pending'}
+          tone={
+            session.status === 'active'
+              ? 'ok'
+              : session.status === 'error'
+              ? 'err'
+              : session.status === 'archived'
+              ? 'info'
+              : 'pending'
+          }
           label={session.status}
         />
-        <div className="actions">
-          <button className="icon-text-btn" type="button" title="Pin / unpin">
-            <Pin size={12} aria-hidden /> {session.pinned ? 'Unpin' : 'Pin'}
-          </button>
-          {session.status !== 'archived' ? (
-            <button className="icon-text-btn" type="button" title="Archive">
-              <Archive size={12} aria-hidden /> Archive
-            </button>
-          ) : (
-            <>
-              <button className="icon-text-btn" type="button" title="Restore">
-                <RotateCw size={12} aria-hidden /> Restore
-              </button>
-              <button className="icon-text-btn" type="button" title="Delete">
-                <Trash2 size={12} aria-hidden /> Delete
-              </button>
-            </>
-          )}
-        </div>
+        <SessionActions
+          session={session}
+          isPinned={isPinned}
+          onRename={onRename}
+          onArchive={onArchive}
+          onUnarchive={onUnarchive}
+          onPin={onPin}
+          onDelete={onDelete}
+        />
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
+export function SessionsPage() {
+  const [tab, setTab] = useState<SessionsTab>('recent');
+  const [search, setSearch] = useState('');
+  const [allItems, setAllItems] = useState<SessionItem[]>([]);
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Modal state
+  const [renameTarget, setRenameTarget] = useState<SessionItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
+
+  // Load pinned IDs from localStorage on mount
+  useEffect(() => {
+    setPinnedIds(getPinnedIds());
+  }, []);
+
+  // Fetch sessions when tab changes
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const filter: ListSessionsOpts['filter'] =
+        tab === 'recent' ? 'recent' : tab === 'pinned' ? 'pinned' : 'archived';
+      const items = await listSessions({ filter, search });
+      if (items === null) {
+        setError('Failed to load sessions — is the backend running?');
+        setAllItems([]);
+      } else {
+        setAllItems(items);
+      }
+    } catch (e) {
+      setError(String(e));
+      setAllItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [tab, search]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Sort: pinned first, then by lastActiveAt
+  const displayed = [...allItems].sort((a, b) => {
+    const aPinned = pinnedIds.includes(a.id) ? 1 : 0;
+    const bPinned = pinnedIds.includes(b.id) ? 1 : 0;
+    if (aPinned !== bPinned) return bPinned - aPinned;
+    return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
+
+  async function handleRename(id: string, title: string) {
+    const updated = await updateSession(id, { title });
+    if (updated) {
+      setAllItems((prev) => prev.map((s) => (s.id === id ? { ...s, title } : s)));
+    }
+  }
+
+  async function handleArchive(session: SessionItem) {
+    const updated = await updateSession(session.id, { archived: true });
+    if (updated) {
+      // Move out of current view
+      setAllItems((prev) => prev.filter((s) => s.id !== session.id));
+    }
+  }
+
+  async function handleUnarchive(session: SessionItem) {
+    const updated = await updateSession(session.id, { archived: false });
+    if (updated) {
+      setAllItems((prev) => prev.filter((s) => s.id !== session.id));
+      // Reload to show in correct tab
+      load();
+    }
+  }
+
+  function handlePin(id: string) {
+    const newPinned = togglePinned(id);
+    setPinnedIds(newPinned);
+  }
+
+  async function handleDelete(id: string) {
+    const ok = await deleteSession(id);
+    if (ok) {
+      setAllItems((prev) => prev.filter((s) => s.id !== id));
+    }
+    // If 501 (backend stub), still remove from UI but warn
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  function emptyMessage() {
+    if (search) return `No sessions matching "${search}"`;
+    if (tab === 'pinned') return 'No pinned sessions yet.';
+    if (tab === 'archived') return 'Archive is empty.';
+    return 'No recent sessions.';
+  }
+
+  return (
+    <div className="sessions-page">
+      <TabStrip
+        title="Sessions"
+        sub={
+          search
+            ? `search: "${search}" · ${displayed.length} results`
+            : `${tab} · ${displayed.length} sessions`
+        }
+        right={<Tabs<SessionsTab> items={tabs} value={tab} onChange={setTab} />}
+      />
+
+      {/* Search bar */}
+      <div className="sessions-search-bar">
+        <Search size={14} className="search-icon" />
+        <input
+          className="sessions-search-input"
+          type="search"
+          placeholder="Search sessions…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+
+      {/* Content */}
+      <div className="sessions-grid">
+        {loading ? (
+          <div className="sessions-state">
+            <Loader size={24} className="spin" />
+            <span>Loading sessions…</span>
+          </div>
+        ) : error ? (
+          <div className="sessions-state sessions-state--error">
+            <AlertCircle size={24} />
+            <span>{error}</span>
+            <button className="btn-secondary" onClick={load}>
+              Retry
+            </button>
+          </div>
+        ) : displayed.length === 0 ? (
+          <div className="sessions-state">
+            <span className="empty-title">{emptyMessage()}</span>
+            {!search && (
+              <span className="empty-hint">
+                Use the ⋮ menu on a session to pin, archive, or delete it.
+              </span>
+            )}
+          </div>
+        ) : (
+          displayed.map((s) => (
+            <SessionCard
+              key={s.id}
+              session={s}
+              isPinned={pinnedIds.includes(s.id)}
+              onRename={setRenameTarget}
+              onArchive={handleArchive}
+              onUnarchive={handleUnarchive}
+              onPin={handlePin}
+              onDelete={setDeleteTarget}
+            />
+          ))
+        )}
+      </div>
+
+      {/* Modals */}
+      {renameTarget && (
+        <RenameModal
+          session={renameTarget}
+          onSave={handleRename}
+          onClose={() => setRenameTarget(null)}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteConfirmModal
+          session={deleteTarget}
+          onConfirm={handleDelete}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }
