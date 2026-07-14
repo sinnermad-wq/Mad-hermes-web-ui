@@ -399,6 +399,30 @@
 }
 
 /* ---------------------------------------------------------------------------
+   New session button
+   --------------------------------------------------------------------------- */
+
+.btn-new-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: white;
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: opacity var(--t-fast);
+  white-space: nowrap;
+}
+
+.btn-new-session:hover {
+  opacity: 0.88;
+}
+
+/* ---------------------------------------------------------------------------
    Spinner
    --------------------------------------------------------------------------- */
 

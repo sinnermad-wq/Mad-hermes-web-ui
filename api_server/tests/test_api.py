@@ -80,6 +80,39 @@ def test_get_sessions_fields(client):
 # GET /api/sessions/:id/messages
 # ---------------------------------------------------------------------------
 
+def test_create_session_returns_201(client):
+    """POST /api/sessions creates a new session and returns it with 201."""
+    import uuid
+    title = f"Test session {uuid.uuid4().hex[:8]}"
+    response = client.post(
+        "/api/sessions",
+        json={"content": "Hello, Hermes", "title": title},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["title"] == title
+    assert data["source"] == "dashboard"
+    assert data["status"] == "active"
+    assert data["id"] is not None
+
+
+def test_create_session_title_is_optional(client):
+    """Title is optional; backend auto-generates one if omitted."""
+    response = client.post(
+        "/api/sessions",
+        json={"content": "Hello"},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["id"] is not None
+
+
+def test_create_session_missing_content_returns_400(client):
+    """Empty content returns HTTP 400."""
+    response = client.post("/api/sessions", json={"content": "   "})
+    assert response.status_code == 400
+
+
 def test_get_messages_unknown_session_returns_404(client):
     """Unknown session ID returns 404."""
     response = client.get("/api/sessions/does-not-exist/messages")

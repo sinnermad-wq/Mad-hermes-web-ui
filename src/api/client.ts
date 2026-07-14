@@ -190,6 +190,36 @@ export interface SessionPatch {
   pinned?: never;
 }
 
+export interface CreateSessionOpts {
+  content: string;
+  title?: string;
+}
+
+export async function createSession(
+  opts: CreateSessionOpts,
+): Promise<SessionItem | null> {
+  if (getMode() === 'mock') {
+    const id = `mock-${Date.now()}`;
+    const s: SessionItem = {
+      id,
+      title: opts.title ?? 'New session',
+      source: 'dashboard',
+      status: 'active',
+      messageCount: 1,
+      startedAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preview: opts.content.slice(0, 80),
+    };
+    sessionsMock.unshift(s);
+    return s;
+  }
+  const data = await apiFetch<SessionItem>('/api/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ content: opts.content, title: opts.title }),
+  });
+  return data;
+}
+
 export async function updateSession(
   id: string,
   patch: SessionPatch,

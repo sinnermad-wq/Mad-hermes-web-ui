@@ -11,11 +11,13 @@ import {
   Search,
   Loader,
   AlertCircle,
+  Plus,
 } from 'lucide-react';
 import { Tabs, TabStrip } from '../../components/UI/Tabs';
 import { StatusBadge, type BadgeTone } from '../../components/UI/Badge';
 import {
   listSessions,
+  createSession,
   updateSession,
   deleteSession,
   togglePinned,
@@ -185,6 +187,88 @@ function RenameModal({ session, onSave, onClose }: RenameModalProps) {
             disabled={loading || !value.trim()}
           >
             {loading ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// New session modal
+// ---------------------------------------------------------------------------
+
+interface NewSessionModalProps {
+  onCreate: (content: string, title?: string) => Promise<void>;
+  onClose: () => void;
+}
+
+function NewSessionModal({ onCreate, onClose }: NewSessionModalProps) {
+  const [content, setContent] = useState('');
+  const [title, setTitle] = useState('');
+  const [loading, setLoading] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  async function handleCreate() {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    try {
+      await onCreate(trimmed, title.trim() || undefined);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">New session</span>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <textarea
+            ref={textareaRef}
+            className="rename-input"
+            style={{ resize: 'vertical', minHeight: 80 }}
+            value={content}
+            placeholder="What would you like to discuss?"
+            onChange={(e) => setContent(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleCreate();
+              if (e.key === 'Escape') onClose();
+            }}
+            maxLength={2000}
+          />
+          <input
+            className="rename-input"
+            type="text"
+            placeholder="Session title (optional)"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            maxLength={120}
+          />
+          <p className="modal-hint">
+            Press <kbd>Ctrl+Enter</kbd> to send, or fill in the title and click "Start session".
+          </p>
+        </div>
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            onClick={handleCreate}
+            disabled={loading || !content.trim()}
+          >
+            {loading ? 'Starting…' : 'Start session'}
           </button>
         </div>
       </div>
@@ -404,6 +488,7 @@ export function SessionsPage() {
   // Modal state
   const [renameTarget, setRenameTarget] = useState<SessionItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
+  const [showNewSession, setShowNewSession] = useState(false);
 
   // Load pinned IDs from localStorage on mount
   useEffect(() => {
@@ -447,6 +532,14 @@ export function SessionsPage() {
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
+
+  async function handleCreate(content: string, title?: string) {
+    const created = await createSession({ content, title });
+    if (created) {
+      setAllItems((prev) => [created, ...prev]);
+      setShowNewSession(false);
+    }
+  }
 
   async function handleRename(id: string, title: string) {
     const updated = await updateSession(id, { title });
@@ -505,7 +598,19 @@ export function SessionsPage() {
             ? `search: "${search}" · ${displayed.length} results`
             : `${tab} · ${displayed.length} sessions`
         }
-        right={<Tabs<SessionsTab> items={tabs} value={tab} onChange={setTab} />}
+        right={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Tabs<SessionsTab> items={tabs} value={tab} onChange={setTab} />
+            <button
+              className="btn-new-session"
+              onClick={() => setShowNewSession(true)}
+              title="New session"
+            >
+              <Plus size={15} />
+              <span>New</span>
+            </button>
+          </div>
+        }
       />
 
       {/* Search bar */}
@@ -574,6 +679,13 @@ export function SessionsPage() {
           session={deleteTarget}
           onConfirm={handleDelete}
           onClose={() => setDeleteTarget(null)}
+        />
+      )}
+
+      {showNewSession && (
+        <NewSessionModal
+          onCreate={handleCreate}
+          onClose={() => setShowNewSession(false)}
         />
       )}
     </div>

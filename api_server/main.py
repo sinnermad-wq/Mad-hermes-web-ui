@@ -318,7 +318,7 @@ def get_session(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.patch("/api/sessions/{session_id}")
-def update_session(
+async def update_session(
     session_id: str,
     request: Request,
 ) -> dict:
@@ -336,7 +336,7 @@ def update_session(
     Errors: 404 — session not found
             422 — empty body
     """
-    body = request._json() or {}
+    body = await request.json() or {}
     if not body:
         raise HTTPException(status_code=422, detail="request body required")
 
@@ -421,6 +421,67 @@ def delete_session(session_id: str):
             "Use archive instead; deleted sessions cannot be recovered."
         ),
     )
+
+
+@app.post("/api/sessions", status_code=201)
+async def create_session(request: Request) -> dict:
+    """
+    Create a new session and insert the first user message.
+
+    The message is written directly to state.db so Hermes's ACP subprocess
+    will pick it up on its next poll and process it asynchronously.
+    The assistant reply is written back to state.db by Hermes — callers
+    should poll GET /api/sessions/:id/messages or use SSE to observe it.
+
+    Request body:  { "content": "your first message", "title": "optional title" }
+    Response:      SessionItem (the new session, 201 Created)
+    Errors:        400 — empty content
+    """
+    body = await request.json() or {}
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    title = (body.get("title") or "").strip() or f"New session {datetime.now().strftime('%d %b %Y %H:%M')}"
+
+    now_ts = time.time()
+    session_id = str(int(now_ts * 1e6))          # microsecond-precision ID
+    msg_id = session_id + "001"
+
+    conn = _get_wconn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO sessions (id, title, source, message_count, started_at, archived)
+            VALUES (?, ?, 'dashboard', 1, ?, 0)
+            """,
+            (session_id, title, now_ts),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (id, session_id, role, content, timestamp, active)
+            VALUES (?, ?, 'user', ?, ?, 1)
+            """,
+            (msg_id, session_id, content, now_ts),
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower():
+            raise HTTPException(status_code=503, detail="database is locked",
+                                headers={"Retry-After": "5"})
+        raise
+    finally:
+        conn.close()
+
+    # Return the newly created session
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return _row_to_session(dict(row))
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
