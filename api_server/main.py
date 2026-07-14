@@ -122,8 +122,42 @@ def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
 # Shape adapters (Hermes DB -> API contract)
 # ---------------------------------------------------------------------------
 
-def _row_to_session(row: dict) -> dict:
+import os
+import json
+from pathlib import Path
+
+HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
+PINS_FILE = HERMES_HOME / "pinned_sessions.json"
+
+
+def _load_pinned_ids() -> set[str]:
+    """Load pinned session IDs from sidecar JSON file. Returns empty set on error."""
+    try:
+        HERMES_HOME.mkdir(parents=True, exist_ok=True)
+        if not PINS_FILE.exists():
+            return set()
+        with open(PINS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ids = data.get("pinned", [])
+        return set(id_ for id_ in ids if isinstance(id_, str))
+    except Exception:
+        return set()
+
+
+def _save_pinned_ids(ids: set[str]) -> None:
+    """Persist pinned session IDs to sidecar JSON file."""
+    try:
+        HERMES_HOME.mkdir(parents=True, exist_ok=True)
+        with open(PINS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"pinned": sorted(ids)}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass  # Non-critical; failures are logged silently
+
+
+def _row_to_session(row: dict, pinned_ids: set[str] | None = None) -> dict:
     """Map a sessions table row to the SessionItem contract."""
+    if pinned_ids is None:
+        pinned_ids = _load_pinned_ids()
     ended_at = row.get("ended_at")
     end_reason = row.get("end_reason")
 
@@ -163,7 +197,7 @@ def _row_to_session(row: dict) -> dict:
         "startedAt": _unix_to_iso(row.get("started_at")),
         "lastActiveAt": _unix_to_iso(ended_at or row.get("started_at")),
         "messageCount": row.get("message_count") or 0,
-        "pinned": False,
+        "pinned": row["id"] in pinned_ids,
         "unread": 0,
     }
 
@@ -242,6 +276,64 @@ def health() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Session pin state (sidecar — not part of Hermes session schema)
+# Stored in ~/.hermes/pinned_sessions.json
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sessions/pins")
+def get_pinned_session_ids() -> dict:
+    """
+    Returns the current set of pinned session IDs.
+    This state is persisted in a sidecar JSON file, NOT in Hermes state.db.
+    """
+    pinned_ids = _load_pinned_ids()
+    return {"pinned": sorted(pinned_ids)}
+
+
+@app.put("/api/sessions/pins")
+async def update_pinned_session_ids(request: Request) -> dict:
+    """
+    Replaces the complete set of pinned session IDs.
+
+    Body: { pinned: string[] }
+    Returns 200 with the new set, or 400 if the body is malformed.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body")
+
+    pinned = body.get("pinned")
+    if not isinstance(pinned, list):
+        raise HTTPException(400, '"pinned" must be a list of session ID strings')
+
+    pinned_str: list[str] = []
+    for item in pinned:
+        if not isinstance(item, str):
+            raise HTTPException(400, '"pinned" must be a list of session ID strings')
+        pinned_str.append(item)
+
+    _save_pinned_ids(set(pinned_str))
+    return {"pinned": pinned_str}
+
+
+@app.on_event("startup")
+def _migrate_pinned_on_startup():
+    """Migrate legacy localStorage-pinned IDs into the sidecar on first run."""
+    legacy = HERMES_HOME / "pinned_sessions.json"
+    if PINS_FILE.exists() or not legacy.exists():
+        return  # already migrated or nothing to migrate
+
+    try:
+        with open(legacy, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ids = data.get("pinned", [])
+        if isinstance(ids, list):
+            _save_pinned_ids(set(ids))
+            print(f"[pins] Migrated {len(ids)} pinned session IDs from legacy storage.")
+    except Exception as e:
+        print(f"[pins] Migration failed (non-fatal): {e}")
+    # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
 
@@ -292,7 +384,8 @@ def list_sessions(
         base_sql += f" LIMIT {limit} OFFSET {offset}"
 
         rows = conn.execute(base_sql, params).fetchall()
-        sessions = [_row_to_session(dict(r)) for r in rows]
+        pinned_ids = _load_pinned_ids()
+        sessions = [_row_to_session(dict(r), pinned_ids) for r in rows]
         return {"sessions": sessions, "total": len(sessions)}
     finally:
         conn.close()
@@ -308,7 +401,8 @@ def get_session(session_id: str) -> dict:
         ).fetchone()
         if not row:
             raise HTTPException(404, f"Session not found: {session_id}")
-        return _row_to_session(dict(row))
+        pinned_ids = _load_pinned_ids()
+        return _row_to_session(dict(row), pinned_ids)
     finally:
         conn.close()
 
@@ -395,14 +489,12 @@ async def update_session(
 @app.delete("/api/sessions/{session_id}")
 def delete_session(session_id: str):
     """
-    Hard-delete a session and all its messages from state.db.
+    Hard-delete is not available. Hermes does not currently support session deletion.
 
-    Errors: 404 — session not found
-            501 — not implemented (no Hermes delete mechanism — see TODO below)
+    Returns 405. Use PATCH /api/sessions/:id with { "archived": true } to archive.
+    Archived sessions can be restored via PATCH with { "archived": false }.
 
-    TODO: Hermes does not currently expose a session delete API. This endpoint
-    is a stub that returns 501 until Hermes provides a proper delete mechanism.
-    A Hermes migration + API adapter change is required before enabling.
+    TODO: When Hermes adds a delete_session RPC, uncomment the implementation below.
     """
     # TODO: uncomment once Hermes provides delete_session RPC
     # conn = _get_wconn()
@@ -415,11 +507,13 @@ def delete_session(session_id: str):
     #     conn.commit()
     # except finally: ...
     raise HTTPException(
-        status_code=501,
+        status_code=405,
         detail=(
-            "DELETE not implemented — Hermes has no session delete mechanism yet. "
-            "Use archive instead; deleted sessions cannot be recovered."
+            "DELETE not supported — Hermes has no session delete mechanism. "
+            "Use PATCH /api/sessions/:id with { \"archived\": true } to archive instead. "
+            "Archived sessions can be restored via PATCH with { \"archived\": false }."
         ),
+        headers={"Allow": "GET, POST, PATCH, OPTIONS"},
     )
 
 

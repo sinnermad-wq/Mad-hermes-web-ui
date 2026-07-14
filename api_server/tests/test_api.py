@@ -280,6 +280,49 @@ def test_get_queue_row_fields(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/sessions/pins  and  PUT /api/sessions/pins
+# ---------------------------------------------------------------------------
+
+def test_get_pins_returns_empty_list(client):
+    """GET /api/sessions/pins returns 200 with a 'pinned' list (may be empty)."""
+    response = client.get("/api/sessions/pins")
+    assert response.status_code == 200
+    data = response.json()
+    assert "pinned" in data
+    assert isinstance(data["pinned"], list)
+
+
+def test_put_pins_updates_and_returns_new_list(client):
+    """PUT /api/sessions/pins replaces the pinned set and returns it."""
+    import uuid
+    ids = [f"sid-{uuid.uuid4().hex[:6]}", f"sid-{uuid.uuid4().hex[:6]}"]
+    response = client.put("/api/sessions/pins", json={"pinned": ids})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["pinned"] == ids
+
+    # GET reflects the update
+    get_resp = client.get("/api/sessions/pins")
+    assert get_resp.json()["pinned"] == ids
+
+
+def test_put_pins_clears_all_pins(client):
+    """PUT with empty list clears all pinned sessions."""
+    import uuid
+    ids = [f"sid-{uuid.uuid4().hex[:6]}"]
+    client.put("/api/sessions/pins", json={"pinned": ids})
+    clear_resp = client.put("/api/sessions/pins", json={"pinned": []})
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["pinned"] == []
+
+
+def test_put_pins_invalid_body_returns_400(client):
+    """PUT with non-list body returns HTTP 400."""
+    response = client.put("/api/sessions/pins", json={"pinned": "not-a-list"})
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # GET /api/dashboard/overview
 # ---------------------------------------------------------------------------
 

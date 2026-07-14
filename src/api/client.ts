@@ -254,12 +254,14 @@ export async function deleteSession(id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Pinned sessions — localStorage only (no backend support yet)
+// Pinned sessions — server-side via /api/sessions/pins (sidecar JSON)
+// Legacy localStorage functions kept for one-time migration only.
 // ---------------------------------------------------------------------------
 
 const PINNED_KEY = 'hermes_web_ui_pinned_sessions';
 
-export function getPinnedIds(): string[] {
+/** Migration: read pinned IDs from localStorage (if any). Call once on startup. */
+export function getPinnedIds_Legacy(): string[] {
   try {
     return JSON.parse(localStorage.getItem(PINNED_KEY) ?? '[]');
   } catch {
@@ -267,17 +269,55 @@ export function getPinnedIds(): string[] {
   }
 }
 
-export function setPinnedIds(ids: string[]): void {
-  localStorage.setItem(PINNED_KEY, JSON.stringify(ids));
+/** Migration: push legacy localStorage pinned IDs to server, then clear localStorage. */
+export async function migratePinnedIds(): Promise<void> {
+  const legacy = getPinnedIds_Legacy();
+  if (legacy.length === 0) return;
+  try {
+    const current = await getPinnedIdsFromApi();
+    const merged = Array.from(new Set([...current, ...legacy]));
+    await setPinnedIdsOnApi(merged);
+    localStorage.removeItem(PINNED_KEY);
+  } catch {
+    // Non-critical — server may not support pins yet; silently skip
+  }
 }
 
-export function togglePinned(id: string): string[] {
-  const pinned = new Set(getPinnedIds());
+/** Fetch current pinned IDs from server. Returns empty list on error. */
+export async function getPinnedIdsFromApi(): Promise<string[]> {
+  try {
+    const data = await apiFetch<{ pinned: string[] }>('/api/sessions/pins');
+    return data?.pinned ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Replace the full pinned-ID set on the server.
+ * Call after every pin/unpin toggle.
+ */
+export async function setPinnedIdsOnApi(ids: string[]): Promise<void> {
+  await apiFetch('/api/sessions/pins', { method: 'PUT', body: JSON.stringify({ pinned: ids }) });
+}
+
+/**
+ * Toggle a session's pinned state.
+ * Reads current pins, toggles the given id, persists to server.
+ * Returns the updated pinned-id list, or null if the server call failed.
+ */
+export async function togglePinned(id: string): Promise<string[] | null> {
+  const current = await getPinnedIdsFromApi();
+  const pinned = new Set(current);
   if (pinned.has(id)) pinned.delete(id);
   else pinned.add(id);
-  const result = Array.from(pinned);
-  setPinnedIds(result);
-  return result;
+  const next = Array.from(pinned);
+  try {
+    await setPinnedIdsOnApi(next);
+    return next;
+  } catch {
+    return null; // caller should handle failure
+  }
 }
 
 /* ------------------------ Chat ------------------------ */

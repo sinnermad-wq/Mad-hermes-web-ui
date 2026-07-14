@@ -6,7 +6,6 @@ import {
   Archive,
   ArchiveRestore,
   Pencil,
-  Trash2,
   X,
   Search,
   Loader,
@@ -19,9 +18,8 @@ import {
   listSessions,
   createSession,
   updateSession,
-  deleteSession,
   togglePinned,
-  getPinnedIds,
+  migratePinnedIds,
   type SessionItem,
   type ListSessionsOpts,
 } from '../../api/client';
@@ -56,68 +54,6 @@ function sourceTone(s: SessionItem['source']): BadgeTone {
   if (s === 'cli') return 'pending';
   if (s === 'gateway' || s === 'telegram') return 'ok';
   return 'pending';
-}
-
-// ---------------------------------------------------------------------------
-// Delete confirmation modal
-// ---------------------------------------------------------------------------
-
-interface DeleteConfirmProps {
-  session: SessionItem;
-  onConfirm: (id: string) => Promise<void>;
-  onClose: () => void;
-}
-
-function DeleteConfirmModal({ session, onConfirm, onClose }: DeleteConfirmProps) {
-  const [loading, setLoading] = useState(false);
-
-  async function handleDelete() {
-    setLoading(true);
-    try {
-      await onConfirm(session.id);
-      onClose();
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <span className="modal-title">Delete session?</span>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">
-            <X size={16} />
-          </button>
-        </div>
-        <div className="modal-body">
-          <p>
-            This will <strong>permanently delete</strong>{' '}
-            <em>"{session.title}"</em> and all its messages.
-          </p>
-          <p className="modal-warning">
-            <AlertCircle size={14} /> This cannot be undone.
-          </p>
-          <p className="modal-hint">
-            Consider archiving instead — archived sessions are hidden but not
-            deleted.
-          </p>
-        </div>
-        <div className="modal-actions">
-          <button className="btn-secondary" onClick={onClose} disabled={loading}>
-            Cancel
-          </button>
-          <button
-            className="btn-danger"
-            onClick={handleDelete}
-            disabled={loading}
-          >
-            {loading ? 'Deleting…' : 'Delete permanently'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +223,6 @@ interface SessionActionsProps {
   onArchive: (s: SessionItem) => void;
   onUnarchive: (s: SessionItem) => void;
   onPin: (id: string) => void;
-  onDelete: (s: SessionItem) => void;
 }
 
 function SessionActions({
@@ -297,7 +232,6 @@ function SessionActions({
   onArchive,
   onUnarchive,
   onPin,
-  onDelete,
 }: SessionActionsProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -374,17 +308,6 @@ function SessionActions({
               <Archive size={13} /> Archive
             </button>
           )}
-
-          {/* Delete */}
-          <button
-            className="menu-item menu-item-danger"
-            onClick={() => {
-              setOpen(false);
-              onDelete(session);
-            }}
-          >
-            <Trash2 size={13} /> Delete
-          </button>
         </div>
       )}
     </div>
@@ -402,7 +325,6 @@ interface SessionCardProps {
   onArchive: (s: SessionItem) => void;
   onUnarchive: (s: SessionItem) => void;
   onPin: (id: string) => void;
-  onDelete: (s: SessionItem) => void;
 }
 
 function SessionCard({
@@ -412,7 +334,6 @@ function SessionCard({
   onArchive,
   onUnarchive,
   onPin,
-  onDelete,
 }: SessionCardProps) {
   return (
     <div className={`session-card${isPinned ? ' session-card--pinned' : ''}`}>
@@ -466,7 +387,6 @@ function SessionCard({
           onArchive={onArchive}
           onUnarchive={onUnarchive}
           onPin={onPin}
-          onDelete={onDelete}
         />
       </div>
     </div>
@@ -487,13 +407,21 @@ export function SessionsPage() {
 
   // Modal state
   const [renameTarget, setRenameTarget] = useState<SessionItem | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
   const [showNewSession, setShowNewSession] = useState(false);
 
-  // Load pinned IDs from localStorage on mount
+  // Mount: migrate any localStorage pins to server, then load sessions.
+  // load in deps so this re-runs if tab/search change; migratePinnedIds is cheap
+  // when there is nothing to migrate.
   useEffect(() => {
-    setPinnedIds(getPinnedIds());
-  }, []);
+    migratePinnedIds().then(() => load());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intended: run once on mount
+
+  // When sessions arrive, sync pinnedIds from the backend's `pinned` field
+  useEffect(() => {
+    const ids = allItems.filter((s) => s.pinned).map((s) => s.id);
+    setPinnedIds(ids);
+  }, [allItems]);
 
   // Fetch sessions when tab changes
   const load = useCallback(async () => {
@@ -565,17 +493,9 @@ export function SessionsPage() {
     }
   }
 
-  function handlePin(id: string) {
-    const newPinned = togglePinned(id);
-    setPinnedIds(newPinned);
-  }
-
-  async function handleDelete(id: string) {
-    const ok = await deleteSession(id);
-    if (ok) {
-      setAllItems((prev) => prev.filter((s) => s.id !== id));
-    }
-    // If 501 (backend stub), still remove from UI but warn
+  async function handlePin(id: string) {
+    const newPinned = await togglePinned(id);
+    if (newPinned) setPinnedIds(newPinned);
   }
 
   // ---------------------------------------------------------------------------
@@ -659,7 +579,6 @@ export function SessionsPage() {
               onArchive={handleArchive}
               onUnarchive={handleUnarchive}
               onPin={handlePin}
-              onDelete={setDeleteTarget}
             />
           ))
         )}
@@ -671,14 +590,6 @@ export function SessionsPage() {
           session={renameTarget}
           onSave={handleRename}
           onClose={() => setRenameTarget(null)}
-        />
-      )}
-
-      {deleteTarget && (
-        <DeleteConfirmModal
-          session={deleteTarget}
-          onConfirm={handleDelete}
-          onClose={() => setDeleteTarget(null)}
         />
       )}
 
