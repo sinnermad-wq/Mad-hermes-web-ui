@@ -224,6 +224,10 @@ export async function postMessage(
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try { const j = await res.json(); detail = j.detail || detail; } catch { /* ignore */ }
+    // Surface database-locked 503 as a typed error the UI can recognise
+    if (res.status === 503 && detail.toLowerCase().includes("locked")) {
+      throw new Error("🔒 Database is busy — Hermes is mid-write. Try again in a moment.");
+    }
     throw new Error(`postMessage failed: ${detail}`);
   }
   // Response is the created user message — return it so the caller can

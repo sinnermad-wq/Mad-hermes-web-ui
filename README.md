@@ -128,11 +128,40 @@ VITE_API_BASE_URL=http://localhost:8080
 **UX flow:**
 1. User types in Chat textarea → Enter or Send button
 2. `sending=true` → input cleared → user message shown immediately (optimistic)
-3. POST /api/sessions/:id/messages → 201 on success, 400/404/500 on error
+3. POST /api/sessions/:id/messages → 201 on success, 400/404/**503** on error
 4. On success: 600ms delay → thread refresh → full thread including Hermes reply
 5. On error: optimistic message rolled back, input restored, error shown for 4s
 
-**Not wired in v2b:** SSE, Mini App auth, pinned-unread persistence, dashboard write path.
+### v2b.1 — Write hardening (this branch)
+
+**Scope:** SQLite write path stability and concurrency safety.
+
+**What was done:**
+1. `busy_timeout=5000` on both read and write connections — SQLite waits up to 5s for a lock before giving up.
+2. WAL mode confirmed on every connection; `_get_wconn()` promotes to WAL if needed.
+3. Write transaction is as short as possible: one INSERT + one UPDATE + commit, all non-blocking.
+4. `database is locked` → `HTTP 503` with stable error shape:
+   ```json
+   { "detail": "database is locked — Hermes is writing. Try again in a moment." }
+   ```
+5. Frontend detects locked 503 and shows a **warning-coloured** message (`🔒 Database is busy — Hermes is mid-write. Try again in a moment.`) instead of a generic error.
+
+**API error shape summary:**
+
+| Status | Condition | Detail |
+|--------|-----------|--------|
+| 400 | Empty `content` field | `"content is required"` |
+| 404 | Session does not exist | `"session not found"` |
+| 503 | `database is locked` (Hermes mid-write) | `"database is locked — Hermes is writing. Try again in a moment."` |
+| 500 | Other SQLite error | `"postMessage failed: HTTP 500"` |
+
+**Concurrency scenario — when does 503 happen?**
+- Hermes ACP uses `mode=normal` locking + WAL. Reads never block.
+- Our API server requests a write lock. If Hermes is mid-write at exactly the same moment, we wait up to 5s (`busy_timeout`). If Hermes completes its write within 5s, we succeed. If not, 503 is returned.
+- **Rare window**: Hermes write typically completes in <100ms. The 5s timeout is very conservative.
+- **Mitigation**: Stop Hermes agent while actively using the web UI's write features to eliminate locked errors entirely.
+
+**Not wired in v2b.1:** SSE, Mini App auth, pinned-unread persistence, dashboard write path.
 
 ## DashboardBlockSpec alignment
 

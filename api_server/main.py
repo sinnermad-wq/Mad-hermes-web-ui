@@ -80,23 +80,37 @@ def _get_conn() -> sqlite3.Connection:
         raise HTTPException(503, f"state.db not found at {DB_PATH}")
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")  # best-effort; read-only ok
+    conn.execute("PRAGMA busy_timeout = 5000")
+    wal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    logger.debug("Read conn — journal_mode=%s, busy_timeout=5000", wal_mode)
     return conn
 
 
 def _get_wconn() -> sqlite3.Connection:
-    """Open a read-write connection to state.db for write operations.
+    """Open a read/write connection to state.db for write operations.
 
-    Note: Hermes may hold the DB in exclusive locking mode. If writes fail
-    with 'database is locked', Hermes needs to be stopped first, or the
-    approach should be changed to Hermes ACP subprocess bridging (v2c).
+    busy_timeout=5000ms: waits up to 5s for a write lock before giving up.
+    WAL mode: allows concurrent readers while writing.
+
+    Concurrency notes:
+    - Hermes holds the DB in NORMAL locking mode (not exclusive) — reads
+      never block and writes don't block reads under WAL.
+    - A "database is locked" error occurs only when Hermes is mid-write
+      AND our write happens simultaneously (very rare window).
+    - If locked: wait 5s → 503 with a stable error shape.
+    - To eliminate locked errors entirely, stop Hermes before writing via
+      the API server, or bridge via Hermes ACP subprocess (v2c/SSE).
     """
     if not Path(DB_PATH).exists():
         raise HTTPException(503, f"state.db not found at {DB_PATH}")
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=rwc", uri=True)
     conn.row_factory = sqlite3.Row
-    # WAL mode allows concurrent reads; write lock still acquired on write
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")     # wait up to 5s for lock
+    wal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    if wal_mode != "wal":
+        logger.warning("state.db journal_mode=%s (expected WAL)", wal_mode)
+        conn.execute("PRAGMA journal_mode=WAL")      # try to promote
+    logger.debug("Write conn — journal_mode=%s, busy_timeout=5000", wal_mode)
     return conn
 
 
@@ -683,9 +697,9 @@ async def post_message(session_id: str, request: Request):
         if not row:
             raise HTTPException(status_code=404, detail="session not found")
 
-        # Insert the user message
-        msg_id = int(time.time() * 1e6)  # microseconds: unique, incrementing
-        ts = time.time()  # Unix epoch (REAL, matches messages.timestamp)
+        # Insert the user message (shortest transaction — one statement)
+        msg_id = int(time.time() * 1e6)
+        ts = time.time()
         conn.execute(
             """
             INSERT INTO messages (id, session_id, role, content, timestamp, active)
@@ -693,27 +707,34 @@ async def post_message(session_id: str, request: Request):
             """,
             (msg_id, session_id, content, ts),
         )
-
-        # Increment message_count on the session
         conn.execute(
             "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
             (session_id,),
         )
         conn.commit()
-
-        logger.info("Message saved for session %s: msg_id=%s", session_id, msg_id)
-        return JSONResponse(
-            {
-                "id": str(msg_id),
-                "role": "user",
-                "content": content,
-                "at": _unix_to_iso(ts),
-                "tokens": len(content.split()),
-            },
-            status_code=201,
-        )
+    except sqlite3.OperationalError as e:
+        err_msg = str(e)
+        if "locked" in err_msg.lower():
+            logger.warning("Write locked for session %s: %s", session_id, err_msg)
+            raise HTTPException(
+                status_code=503,
+                detail="database is locked — Hermes is writing. Try again in a moment.",
+            )
+        raise  # re-raise unexpected OperationalError
     finally:
         conn.close()
+
+    logger.info("Message saved for session %s: msg_id=%s", session_id, msg_id)
+    return JSONResponse(
+        {
+            "id": str(msg_id),
+            "role": "user",
+            "content": content,
+            "at": _unix_to_iso(ts),
+            "tokens": len(content.split()),
+        },
+        status_code=201,
+    )
 
 
 # ---------------------------------------------------------------------------

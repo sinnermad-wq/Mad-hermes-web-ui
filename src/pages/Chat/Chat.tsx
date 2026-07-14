@@ -226,11 +226,25 @@ export function ChatPage() {
             submit();
           }}
         >
-          {sendError && (
-              <p role="alert" style={{ color: 'var(--color-err)', fontSize: 'var(--text-sm)', margin: '4px 0 0' }}>
+          {sendError && (() => {
+            const isLocked = sendError.toLowerCase().includes('locked') || sendError.includes('🔒');
+            return (
+              <p
+                role="alert"
+                style={{
+                  color: isLocked ? 'var(--color-warn, #d97706)' : 'var(--color-err, #dc2626)',
+                  fontSize: 'var(--text-sm)',
+                  margin: '4px 0 0',
+                  fontWeight: isLocked ? '600' : '400',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
                 {sendError}
               </p>
-            )}
+            );
+          })()}
           <textarea
             placeholder="Message Hermes…"
             value={input}
