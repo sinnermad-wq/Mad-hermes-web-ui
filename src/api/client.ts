@@ -19,8 +19,11 @@
  *   GET /api/dashboard/review    → getReview()
  *   GET /api/dashboard/queue     → getQueue()
  *
- * NOT wired in v2a: SSE, postMessage, approveToolEvent, Mini App auth.
+ * v2b scope: POST /api/sessions/:id/messages
+ * v2c scope: GET /api/events SSE
  */
+
+import { useEffect } from 'react';
 
 import {
   sessionsMock,
@@ -329,13 +332,45 @@ export type SSEEventType =
   | 'session.context'
   | 'chat.message'
   | 'chat.messageEdit'
-  | 'trace.step'
-  | 'trace.completed'
+  | 'trace.delta'     // v2c: new trace step detected
+  | 'trace.done'      // v2c: trace step / turn completed
   | 'approval.requested'
   | 'approval.resolved'
-  | 'queue.row'
+  | 'queue.row'       // v2c: individual queue row update
+  | 'queue.snapshot'  // v2c: full queue state on connect
+  | 'queue.alert'     // v2c: queue threshold alert
   | 'queue.deleted'
   | 'health.changed';
+
+/* ------------------------------------------------------------------ */
+/* SSE Payload shapes                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface TraceDeltaPayload {
+  sessionId: string;
+  step: TraceEntry;
+}
+
+export interface TraceDonePayload {
+  sessionId: string;
+  status: 'ok' | 'warn' | 'err';
+  totalDurationMs: number;
+  tokensUsed: number;
+}
+
+export interface QueueSnapshotPayload {
+  rows: QueueRow[];
+}
+
+export interface QueueRowPayload {
+  row: QueueRow;
+}
+
+export interface QueueAlertPayload {
+  row: QueueRow;
+  reason: string;
+  severity: 'info' | 'warn' | 'err';
+}
 
 /* ------------------------ Telegram Mini App — reservation (not wired in v2a) ------------------------ */
 
@@ -355,3 +390,192 @@ export interface MiniAppAuthResp {
 }
 
 export const MINI_APP_JWT_STORAGE_KEY = 'hermes-web-ui.mini-app.jwt';
+
+/* ------------------------------------------------------------------ */
+/* v2c: SSE — EventSource wrapper + hooks                              */
+/* ------------------------------------------------------------------ */
+
+/** Connection states for an EventSource. */
+export type EsState = 'connecting' | 'open' | 'reconnecting' | 'closed';
+
+/**
+ * Open an EventSource to /api/events, reconnecting on close with
+ * exponential back-off. Dispatches events to registered listeners.
+ * Returns a cleanup function.
+ *
+ * In mock mode (no VITE_API_BASE_URL) this is a no-op.
+ */
+export function openEventSource(params?: {
+  sessionId?: string;
+  onTraceDelta?: (p: TraceDeltaPayload) => void;
+  onTraceDone?: (p: TraceDonePayload) => void;
+  onQueueSnapshot?: (p: QueueSnapshotPayload) => void;
+  onQueueRow?: (p: QueueRowPayload) => void;
+  onQueueAlert?: (p: QueueAlertPayload) => void;
+  onStateChange?: (s: EsState) => void;
+}): () => void {
+  const url = getSseUrl();
+  if (!url) return () => { /* mock mode — no-op */ };
+
+  const { sessionId, onStateChange } = params ?? {};
+
+  // Build URL with optional filters
+  const urlWithParams = sessionId ? `${url}?session=${encodeURIComponent(sessionId)}` : url;
+
+  let es: EventSource;
+  let retryCount = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let destroyed = false;
+
+  function notifyState(s: EsState) {
+    onStateChange?.(s);
+  }
+
+  function connect() {
+    if (destroyed) return;
+    notifyState('connecting');
+
+    es = new EventSource(urlWithParams);
+
+    es.addEventListener('open', () => {
+      retryCount = 0;
+      notifyState('open');
+    });
+
+    // trace.delta
+    es.addEventListener('trace.delta', (e) => {
+      params?.onTraceDelta?.(JSON.parse((e as MessageEvent).data));
+    });
+
+    // trace.done
+    es.addEventListener('trace.done', (e) => {
+      params?.onTraceDone?.(JSON.parse((e as MessageEvent).data));
+    });
+
+    // queue.snapshot
+    es.addEventListener('queue.snapshot', (e) => {
+      params?.onQueueSnapshot?.(JSON.parse((e as MessageEvent).data));
+    });
+
+    // queue.row
+    es.addEventListener('queue.row', (e) => {
+      params?.onQueueRow?.(JSON.parse((e as MessageEvent).data));
+    });
+
+    // queue.alert
+    es.addEventListener('queue.alert', (e) => {
+      params?.onQueueAlert?.(JSON.parse((e as MessageEvent).data));
+    });
+
+    es.addEventListener('error', () => {
+      if (destroyed) return;
+      es.close();
+      if (retryCount < 5) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 30_000);
+        retryCount++;
+        notifyState('reconnecting');
+        retryTimer = setTimeout(connect, delay);
+      } else {
+        notifyState('closed');
+      }
+    });
+  }
+
+  connect();
+
+  // Returns cleanup — call to disconnect and stop reconnecting
+  return () => {
+    destroyed = true;
+    if (retryTimer != null) clearTimeout(retryTimer);
+    es.close();
+  };
+}
+
+/**
+ * useLiveTrace — opens an SSE connection scoped to a session and
+ * updates the local trace array on each trace.delta / trace.done event.
+ * Falls back to a single REST poll on error / close.
+ *
+ * Usage:
+ *   const trace = useLiveTrace(sessionId, setTrace);
+ */
+export function useLiveTrace(
+  sessionId: string | null,
+  setTrace: React.Dispatch<React.SetStateAction<TraceEntry[]>>,
+): void {
+  useEffect(() => {
+    if (!sessionId) return;
+
+    // Snapshot: fetch current trace on connect
+    getTrace(sessionId).then((initial) => {
+      setTrace(initial);
+    });
+
+    const cleanup = openEventSource({
+      sessionId,
+      onTraceDelta: ({ step }) => {
+        setTrace((prev) => {
+          // Dedupe by id — avoid duplicates if REST poll already added it
+          if (prev.some((e) => e.id === step.id)) return prev;
+          return [...prev, step];
+        });
+      },
+      onTraceDone: () => {
+        // Turn complete — refresh full trace to pick up all steps
+        getTrace(sessionId).then((fresh) => setTrace(fresh));
+      },
+      onStateChange: (s) => {
+        if (s === 'closed') {
+          // Exhausted retries — fall back to polling via setTrace call above
+          getTrace(sessionId).then((fresh) => setTrace(fresh));
+        }
+      },
+    });
+
+    return cleanup;
+  }, [sessionId, setTrace]);
+}
+
+/**
+ * useLiveQueue — opens an SSE connection and updates the queue rows
+ * on each queue.snapshot / queue.row / queue.alert event.
+ */
+export function useLiveQueue(
+  setRows: React.Dispatch<React.SetStateAction<QueueRow[]>>,
+  addAlert?: (msg: string) => void,
+): void {
+  useEffect(() => {
+    // Snapshot: fetch current queue on connect
+    getQueue().then((rows) => setRows(rows));
+
+    const cleanup = openEventSource({
+      onQueueSnapshot: ({ rows }) => setRows(rows),
+      onQueueRow: ({ row }) => {
+        setRows((prev) => {
+          const idx = prev.findIndex((r) => r.id === row.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = row;
+            return next;
+          }
+          return [...prev, row];
+        });
+      },
+      onQueueAlert: ({ row, reason, severity }) => {
+        addAlert?.(`[${severity.toUpperCase()}] ${row.name}: ${reason}`);
+        // Also update the row in state
+        setRows((prev) => {
+          const idx = prev.findIndex((r) => r.id === row.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = row;
+            return next;
+          }
+          return prev;
+        });
+      },
+    });
+
+    return cleanup;
+  }, [setRows, addAlert]);
+}

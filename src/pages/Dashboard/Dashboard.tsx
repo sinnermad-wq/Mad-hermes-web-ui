@@ -9,7 +9,7 @@ import {
   getOverview,
   getHealth,
   getReview,
-  getQueue,
+  useLiveQueue,
   type DashboardKPI,
   type HealthRow,
   type ReviewRow,
@@ -75,11 +75,10 @@ function useReview() {
   }, []);
   return rows;
 }
-function useQueue() {
+function useQueue(addAlert?: (msg: string) => void) {
   const [rows, setRows] = useState<QueueRow[]>([]);
-  useEffect(() => {
-    getQueue().then(setRows);
-  }, []);
+  // v2c: open SSE — useLiveQueue handles initial snapshot + live updates
+  useLiveQueue(setRows, addAlert);
   return rows;
 }
 
@@ -189,7 +188,8 @@ function Review() {
 }
 
 function Queue() {
-  const rows = useQueue();
+  const [alerts, setAlerts] = useState<string[]>([]);
+  const rows = useQueue((msg) => setAlerts((prev) => [msg, ...prev].slice(0, 5)));
   const cols: Column<QueueRow>[] = useMemo(
     () => [
       {
@@ -210,6 +210,15 @@ function Queue() {
   );
   return (
     <div className="tab-grid">
+      {alerts.length > 0 && (
+        <div className="queue-alerts" style={{ marginBottom: '8px' }}>
+          {alerts.map((a, i) => (
+            <div key={i} style={{ color: 'var(--color-warn)', fontSize: 'var(--text-sm)', padding: '4px 0' }}>
+              ⚠ {a}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="queue-table">
         <DataTable rows={rows} columns={cols} />
       </div>

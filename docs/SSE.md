@@ -51,12 +51,13 @@ Stable string enum — extend, never rename. New optional fields are backward-co
 | `session.context`   | Context stats refreshed        | Detail panel (Context tab) |
 | `chat.message`      | A new message landed in thread | Chat conversation   |
 | `chat.messageEdit`  | Replacement (token streaming)  | Chat conversation   |
-| `trace.step`        | Agent trace step started/updated | Detail panel (Trace) |
-| `trace.completed`   | All trace steps for a turn finished | Detail panel (Trace) |
+| `trace.delta`       | Agent tool call detected (new trace step) | Detail panel (Trace) |
+| `trace.done`        | All trace steps for a turn finished  | Detail panel (Trace) |
 | `approval.requested`| Trace hit a guard; needs user decision | Detail panel (Approval) |
 | `approval.resolved` | User/server already resolved   | Detail panel (Approval) |
 | `queue.row`         | Queue row created/updated      | Dashboard Queue     |
-| `queue.deleted`     | Queue row removed              | Dashboard Queue     |
+| `queue.snapshot`    | Full queue state on connect    | Dashboard Queue     |
+| `queue.alert`       | Queue anomaly detected         | Dashboard Queue     |
 | `health.changed`    | A health row flipped status    | Dashboard Health    |
 | `placeholder`       | reserved (legacy trade messages) | reserved           |
 
@@ -120,24 +121,22 @@ Stable string enum — extend, never rename. New optional fields are backward-co
 }
 ```
 
-### `trace.step`
+### `trace.delta`
 
 ```ts
 {
-  sessionId: string;
-  traceId: string;          // trace id within session
-  step: TraceEntry;         // same as GET /sessions/:id/trace element
-  pendingApproval?: boolean;// when true → also emit approval.requested
+  sessionId: string;         // scoped to the session that produced this step
+  step: TraceEntry;           // same shape as GET /sessions/:id/trace element
+  pendingApproval?: boolean;  // when true → also emit approval.requested
 }
 ```
 
-### `trace.completed`
+### `trace.done`
 
 ```ts
 {
   sessionId: string;
-  traceId: string;
-  status: Tone;
+  status: Tone;              // 'ok' | 'warn' | 'err'
   totalDurationMs: number;
   tokensUsed: number;
 }
@@ -176,6 +175,24 @@ Stable string enum — extend, never rename. New optional fields are backward-co
 }
 ```
 
+### `queue.snapshot`
+
+```ts
+{
+  rows: QueueRow[];         // full queue state — replaces local state on connect
+}
+```
+
+### `queue.alert`
+
+```ts
+{
+  row: QueueRow;            // the affected row (with updated status)
+  reason: string;           // human-readable reason, e.g. "Session ended — possible timeout"
+  severity: 'info' | 'warn' | 'err';
+}
+```
+
 ### `queue.deleted`
 
 ```ts
@@ -194,7 +211,15 @@ Stable string enum — extend, never rename. New optional fields are backward-co
 
 ## Filter channels
 
-The server MAY scope an SSE subscription. v1 client opens one fat stream (no filter); v2 may add `?session=<id>` to scope to one session. Subscribers should ignore `sessionId` mismatches silently (no error spam).
+The server MAY scope an SSE subscription via `?session=<id>`. When `session` is set, only `trace.delta` / `trace.done` events for that session are emitted. Queue events are always emitted to all clients.
+
+Subscribers should ignore `sessionId` mismatches silently (no error spam).
+
+**Server-side polling:** Hermes writes to state.db asynchronously; the API server polls every 2 seconds and broadcasts change events to all connected SSE clients. Polls use read-only connections (`mode=ro`) so they never conflict with Hermes writes.
+
+**Reconnection strategy:** `openEventSource()` in `src/api/client.ts` implements exponential back-off (1s → 2s → 4s → … → max 30s), up to 5 retries. After 5 failures the stream enters `'closed'` state. Components should fall back to one-shot REST calls on `'closed'`.
+
+**Heartbeat:** server sends `: ping\n\n` every 15s to prevent proxy timeouts. Clients do not receive these in event handlers.
 
 ---
 
@@ -204,26 +229,50 @@ Not in v1. If the backend team prefers WS over SSE, the **event types** above st
 
 ---
 
-## Reservation registration (v2 client)
+## Hooks (v2c)
+
+Three hooks are exported from `src/api/client.ts`:
 
 ```ts
-// src/hooks/useLiveSession.ts (v2 — file does not exist in v1)
-import { useEffect } from 'react';
+import { openEventSource, useLiveTrace, useLiveQueue } from '../../api/client';
 
-export function useLiveSession(sessionId: string, onEvent: (e: SSEEvent) => void) {
-  useEffect(() => {
-    if (!import.meta.env.VITE_API_BASE_URL) return; // mock mode → no stream
-    const es = new EventSource(
-      `${import.meta.env.VITE_API_BASE_URL}/events?session=${sessionId}`
-    );
-    for (const ev of [
-      'chat.message', 'chat.messageEdit',
-      'trace.step', 'trace.completed',
-      'session.context', 'approval.requested', 'approval.resolved',
-    ]) es.addEventListener(ev, (e) => onEvent({ type: ev, payload: JSON.parse((e as MessageEvent).data) }));
-    return () => es.close();
-  }, [sessionId, onEvent]);
-}
+// Low-level: manages EventSource lifecycle + exponential back-off reconnect
+// Returns cleanup function; call inside useEffect.
+const cleanup = openEventSource({
+  sessionId,              // optional — filters trace events
+  onTraceDelta,            // (p: TraceDeltaPayload) => void
+  onTraceDone,             // (p: TraceDonePayload) => void
+  onQueueSnapshot,         // (p: QueueSnapshotPayload) => void
+  onQueueRow,              // (p: QueueRowPayload) => void
+  onQueueAlert,            // (p: QueueAlertPayload) => void
+  onStateChange,           // (s: EsState) => void
+});
+// → call cleanup() on unmount
+
+// Per-session trace: fetches initial trace, opens SSE, updates setTrace on events.
+// Falls back to one-shot REST on connection close.
+function useLiveTrace(
+  sessionId: string | null,
+  setTrace: React.Dispatch<React.SetStateAction<TraceEntry[]>>,
+): void { /* calls openEventSource internally */ }
+
+// Dashboard queue: fetches initial queue, opens SSE, updates setRows on events.
+// Shows last 5 alerts via optional addAlert callback.
+function useLiveQueue(
+  setRows: React.Dispatch<React.SetStateAction<QueueRow[]>>,
+  addAlert?: (msg: string) => void,
+): void { /* calls openEventSource internally */ }
 ```
 
-Both `useLiveSession()` (per-session) and a future `useLiveDashboard()` (global queue + health) hang off the same vocabulary. No public type changes when v2 lands.
+**Usage in Chat Trace panel:**
+```tsx
+// src/pages/Chat/Chat.tsx
+useLiveTrace(activeId, setTrace);
+```
+
+**Usage in Dashboard Queue panel:**
+```tsx
+// src/pages/Dashboard/Dashboard.tsx
+const [alerts, setAlerts] = useState<string[]>([]);
+const rows = useQueue((msg) => setAlerts((prev) => [msg, ...prev].slice(0, 5)));
+```

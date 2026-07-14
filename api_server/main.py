@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi import FastAPI, HTTPException, Query, Request
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hermes-api")
@@ -734,6 +734,280 @@ async def post_message(session_id: str, request: Request):
             "tokens": len(content.split()),
         },
         status_code=201,
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSE /api/events — read-only live updates (v2c)
+# ---------------------------------------------------------------------------
+# Hermes writes to state.db asynchronously. The API server polls the DB
+# every 2 seconds for changes and broadcasts them to connected SSE clients.
+#
+# This is a read-only channel — no writes flow through SSE.
+# Supported event types: trace.delta, trace.done, queue.row, queue.snapshot,
+# queue.alert.
+#
+# Hermes lock: uses _get_conn() (read-only, mode=ro) so polling never
+# conflicts with Hermes writes. Hermes uses NORMAL locking + WAL, so our
+# reads are never blocked.
+# ---------------------------------------------------------------------------
+
+import queue as _queue
+import threading
+
+#: Shared event queue for the SSE broadcaster
+_sse_queue: _queue.Queue[tuple[str, str] | None] = _queue.Queue()
+
+#: Background polling thread (started on app startup)
+_poll_thread: threading.Thread | None = None
+_poll_stop = threading.Event()
+
+
+def _poll_state():
+    """Poll Hermes state.db every 2s and push SSE events into _sse_queue.
+
+    Trace detection: new tool-role messages since last poll → trace.delta.
+    When an assistant message arrives after tool messages → trace.done.
+
+    Queue detection: changes in cron sessions in the last 24h → queue.row.
+    New sessions → also emit queue.snapshot once for the connecting client.
+    """
+    conn = None
+    last_trace_ts: float = 0.0   # highest timestamp seen in messages
+    last_queue_ids: set[str] = set()
+    first_poll = True
+
+    while not _poll_stop.wait(2.0):
+        try:
+            if conn is None:
+                conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+
+            # --- Trace: new tool messages ---
+            rows = conn.execute(
+                """
+                SELECT id, session_id, role, content, timestamp, token_count, tool_calls
+                FROM messages
+                WHERE role = 'tool' AND timestamp > ?
+                ORDER BY timestamp ASC
+                LIMIT 20
+                """,
+                (last_trace_ts,),
+            ).fetchall()
+
+            for row in rows:
+                d = dict(row)
+                ts = d.get("timestamp", 0)
+                if ts > last_trace_ts:
+                    last_trace_ts = ts
+
+                # Build TraceEntry from tool message
+                tool_calls_raw = d.get("tool_calls")
+                label = "tool.unknown"
+                if tool_calls_raw:
+                    try:
+                        tc_list = json.loads(tool_calls_raw)
+                        if isinstance(tc_list, list) and tc_list:
+                            label = f"tool.{tc_list[0].get('name', 'unknown')}"
+                    except Exception:
+                        pass
+
+                entry = {
+                    "id": str(d["id"]),
+                    "startedAt": _unix_to_iso(ts),
+                    "durationMs": (d.get("token_count") or 0) * 10,
+                    "label": label,
+                    "status": "ok",
+                    "tokens": d.get("token_count"),
+                    "tool": label.split(".", 1)[1] if "." in label else None,
+                }
+                _sse_queue.put(("trace.delta", json.dumps({
+                    "sessionId": str(d["session_id"]),
+                    "step": entry,
+                })))
+
+            # Emit trace.done if we saw tool messages AND assistant replied after
+            if rows:
+                last_assistant_ts = conn.execute(
+                    """
+                    SELECT MAX(timestamp) FROM messages
+                    WHERE role = 'assistant' AND timestamp > ?
+                    """,
+                    (last_trace_ts - 60,),
+                ).fetchone()[0]
+                if last_assistant_ts and last_assistant_ts > last_trace_ts:
+                    total_tokens = conn.execute(
+                        "SELECT SUM(token_count) FROM messages WHERE session_id = ?",
+                        (rows[0]["session_id"],),
+                    ).fetchone()[0] or 0
+                    _sse_queue.put(("trace.done", json.dumps({
+                        "sessionId": str(rows[0]["session_id"]),
+                        "status": "ok",
+                        "totalDurationMs": int(total_tokens * 10),
+                        "tokensUsed": total_tokens,
+                    })))
+
+            # --- Queue: cron sessions in last 24h ---
+            now_ts = time.time()
+            day_ago = now_ts - 86400
+            queue_rows = conn.execute(
+                """
+                SELECT id, title, started_at, message_count, ended_at
+                FROM sessions
+                WHERE source = 'cron' AND started_at >= ?
+                ORDER BY started_at DESC
+                LIMIT 20
+                """,
+                (day_ago,),
+            ).fetchall()
+
+            # Snapshot on first poll
+            if first_poll:
+                first_poll = False
+                rows_list = [
+                    {
+                        "id": r["id"],
+                        "kind": "cron",
+                        "name": r["title"] or "cron session",
+                        "status": "running" if not r["ended_at"] else "scheduled",
+                        "detail": f"{r['message_count']} messages",
+                    }
+                    for r in queue_rows
+                ]
+                _sse_queue.put(("queue.snapshot", json.dumps({"rows": rows_list})))
+                last_queue_ids = {r["id"] for r in queue_rows}
+            else:
+                current_ids = {r["id"] for r in queue_rows}
+                new_ids = current_ids - last_queue_ids
+                changed_ids = {
+                    r["id"] for r in queue_rows
+                    if r["id"] in last_queue_ids
+                }
+
+                for r in queue_rows:
+                    row_dict = {
+                        "id": r["id"],
+                        "kind": "cron",
+                        "name": r["title"] or "cron session",
+                        "status": "running" if not r["ended_at"] else "scheduled",
+                        "detail": f"{r['message_count']} messages",
+                    }
+                    if r["id"] in new_ids or r["id"] in changed_ids:
+                        _sse_queue.put(("queue.row", json.dumps({"row": row_dict})))
+
+                last_queue_ids = current_ids
+
+                # Simple alert heuristic: session that was running but now has ended_at
+                # (premature end → potential timeout/error)
+                for r in queue_rows:
+                    if r["ended_at"] and r["id"] in changed_ids:
+                        row_alert = {
+                            "id": r["id"],
+                            "kind": "cron",
+                            "name": r["title"] or "cron session",
+                            "status": "err",
+                            "detail": f"ended unexpectedly at {_unix_to_iso(r['ended_at'])}",
+                        }
+                        _sse_queue.put(("queue.alert", json.dumps({
+                            "row": row_alert,
+                            "reason": "Session ended — possible timeout or error",
+                            "severity": "warn",
+                        })))
+
+        except Exception as e:
+            logger.warning("Poll thread error: %s", e)
+        finally:
+            pass  # keep conn open for reuse
+
+    if conn:
+        conn.close()
+    logger.info("Poll thread stopped")
+
+
+@app.on_event("startup")
+def _start_poll_thread():
+    global _poll_thread, _poll_stop
+    _poll_stop.clear()
+    _poll_thread = threading.Thread(target=_poll_state, daemon=True)
+    _poll_thread.start()
+    logger.info("SSE poll thread started")
+
+
+@app.on_event("shutdown")
+def _stop_poll_thread():
+    global _poll_thread, _poll_stop
+    _poll_stop.set()
+    if _poll_thread:
+        _poll_thread.join(timeout=5)
+    logger.info("SSE poll thread stopped")
+
+
+@app.get("/api/events")
+async def sse_events(
+    session: str | None = Query(None, description="Scope to a specific session ID"),
+):
+    """
+    SSE endpoint — streams read-only live events.
+
+    Event types emitted:
+    - trace.delta   — new tool trace step detected
+    - trace.done    — trace turn complete
+    - queue.snapshot — full queue state (on connect)
+    - queue.row     — individual queue row update
+    - queue.alert   — queue anomaly detected
+
+    Clients should send ``Last-Event-ID`` on reconnect to resume
+    from the last received event (id is the SSE event id field).
+
+    Heartbeat: a comment `: ping\\n\\n` is sent every 15s to keep
+    the connection alive through proxies.
+
+    Query params:
+    - ``session``: if set, only trace events for that session are emitted.
+      Queue events are always emitted.
+    """
+
+    async def event_generator():
+        last_eid = 0  # simple auto-increment event id
+        last_heartbeat = 0
+
+        while True:
+            try:
+                # Wait up to 15s for an event
+                event_data = _sse_queue.get(timeout=15)
+                if event_data is None:
+                    break  # shutdown signal
+                etype, payload = event_data
+
+                # Filter by session if specified
+                if session and etype in ("trace.delta", "trace.done"):
+                    try:
+                        p = json.loads(payload)
+                        if p.get("sessionId") != session:
+                            continue
+                    except Exception:
+                        pass
+
+                last_eid += 1
+                yield f"id: {last_eid}\nevent: {etype}\ndata: {payload}\n\n"
+                last_heartbeat = 0
+
+            except _queue.Empty:
+                # Heartbeat — prevent proxy timeouts
+                yield ": ping\n\n"
+                last_heartbeat += 1
+                if last_heartbeat > 100:
+                    # Sanity: far too many heartbeats with no events — close
+                    break
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",          # disable nginx buffering
+            "Access-Control-Allow-Origin": "*",
+        },
     )
 
 

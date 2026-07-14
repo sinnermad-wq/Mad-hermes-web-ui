@@ -1,4 +1,4 @@
-# HERMES Web UI · v2b
+# HERMES Web UI · v2c
 
 Operations-console shell for HERMES — desktop + mobile. v1 is **UI only**: no backend, no auth, no DB wiring. All data is mock. Designed so a FastAPI backend, dashboard blocks, and a Telegram Mini App can drop in later without rewrites.
 
@@ -163,6 +163,62 @@ VITE_API_BASE_URL=http://localhost:8080
 
 **Not wired in v2b.1:** SSE, Mini App auth, pinned-unread persistence, dashboard write path.
 
+### v2c — Read-only SSE (this branch)
+
+**Scope:** `GET /api/events` SSE endpoint + `useLiveTrace` / `useLiveQueue` hooks.
+
+**Architecture:**
+- Background thread polls `state.db` every 2 seconds using read-only connections (`mode=ro`) — never conflicts with Hermes writes
+- Events pushed into a shared thread-safe queue
+- `StreamingHttpResponse` with async generator yields events to each SSE client
+- `?session=<id>` query param scopes trace events to a single session (queue events always emitted)
+
+**Event types emitted:**
+
+| `event:` | Trigger |
+|---|---|
+| `trace.delta` | New tool-role message in session |
+| `trace.done` | Assistant reply detected after tool messages |
+| `queue.snapshot` | On first poll — full queue state |
+| `queue.row` | Cron session added or changed |
+| `queue.alert` | Cron session ends unexpectedly |
+
+**Reconnect strategy:**
+- Exponential back-off: 1s → 2s → 4s → 8s → 16s → max 30s
+- Max 5 retries, then enters `'closed'` state
+- On `'closed'`: components fall back to one-shot REST calls
+- Heartbeat `: ping\n\n` sent every 15s to prevent proxy timeouts
+
+**Frontend hooks:**
+
+```ts
+// Chat Trace panel — replaces REST-only getTrace()
+useLiveTrace(activeId, setTrace);
+
+// Dashboard Queue panel — replaces REST-only getQueue()
+useLiveQueue(setRows, addAlertCallback);
+```
+
+**SSE endpoint shape:**
+```
+GET /api/events?session=20260713_215313_cf2f6e
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+id: 1
+event: queue.snapshot
+data: {"rows":[{"id":"...","kind":"cron","name":"...","status":"running",...}]}
+
+id: 2
+event: trace.delta
+data: {"sessionId":"...","step":{"id":"...","label":"tool.terminal.run",...}}
+
+id: 3
+event: trace.done
+data: {"sessionId":"...","status":"ok","totalDurationMs":320,"tokensUsed":42}
+```
+
 ## DashboardBlockSpec alignment
 
 `src/api/client.ts` exports a tagged-union `DashboardBlockSpec` shape (`kpi | chart | table | placeholder`). Same shape the existing `daily-xauusd-bot` package emits, so a single telemetry API can serve both in v2. See `docs/API.md` § Dashboard blocks.
@@ -173,14 +229,9 @@ VITE_API_BASE_URL=http://localhost:8080
 - `src/api/client.ts` exposes `MiniAppAuthBody`, `MiniAppAuthResp`, and `MINI_APP_JWT_STORAGE_KEY` (a `sessionStorage` key, **not** `localStorage`).
 - v2 work: implement the JWT exchange hook + 401-refresh inside `client.ts` only. v1 client untouched.
 
-## SSE reservation
+## SSE — implemented in v2c
 
-`src/api/client.ts` exports:
-- `SSEEvent<T>` envelope
-- `SSEEventType` stable string enum (`session.started`, `chat.message`, `trace.step`, `queue.row`, …)
-- `getSseUrl()` reader that respects `VITE_SSE_URL` or derives from `VITE_API_BASE_URL`.
-
-v1 client never opens a stream. v2 hooks (`useLiveSession()`, `useLiveDashboard()`) hang off the existing types without API surface changes. See `docs/SSE.md`.
+`GET /api/events` streams read-only live events. Clients use `openEventSource()` (low-level) or `useLiveTrace()` / `useLiveQueue()` hooks. See `docs/SSE.md` for full event schema and payload shapes.
 
 ## Smoke test
 

@@ -7,11 +7,11 @@ import type { Column } from '../../components/UI/DataTable';
 import { EmptyState } from '../../components/UI/Placeholder';
 import {
   getThread,
-  getTrace,
   getContext,
   postMessage,
   listSessions,
   approveToolEvent,
+  useLiveTrace,
   type SessionItem,
   type ChatMessage,
   type TraceEntry,
@@ -67,9 +67,11 @@ export function ChatPage() {
     setTrace([]);
     setContextInfo(null);
     getThread(activeId).then((t) => setMessages(t.messages));
-    getTrace(activeId).then(setTrace);
     getContext(activeId).then(setContextInfo);
   }, [activeId]);
+
+  // v2c: open SSE trace stream for this session
+  useLiveTrace(activeId, setTrace);
 
   useEffect(() => {
     if (convoRef.current) convoRef.current.scrollTop = convoRef.current.scrollHeight;
