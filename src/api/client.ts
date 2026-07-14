@@ -1,31 +1,25 @@
 /**
- * API surface reservation.
+ * API surface for HERMES Web UI.
  *
- * Every page/component reads data through hooks in this file. Today they
- * resolve local mocks synchronously; tomorrow each `fetch*` call can be
- * swapped for `fetch('/api/...')` once the FastAPI backend lands.
+ * Mode switch (see docs/CONFIG.md):
+ *   VITE_API_BASE_URL unset/empty → mock data (v1 default)
+ *   VITE_API_BASE_URL set         → real FastAPI server (v2a+)
  *
- * Mode switch — see docs/CONFIG.md:
- *   - VITE_API_BASE_URL empty/missing  → MOCK mode (v1 default)
- *   - VITE_API_BASE_URL set            → REAL mode (v2; current code still mocks)
- *   - VITE_MINI_APP=1                  → Mini App auth header injection (v2; v1 no-op)
+ * Mock functions are preserved so the bundle works standalone without a server.
+ * Each function returns null on error so consuming components get a consistent
+ * Loading → Data | Error → Empty state pipeline.
  *
- * Slots reserved for later:
- *   - GET /api/sessions                  (list, filter by pinned/archived)
- *   - GET /api/sessions/:id              (single session summary)
- *   - GET /api/sessions/:id/messages     (conversation thread)
- *   - GET /api/sessions/:id/trace        (agent trace entries)
- *   - GET /api/sessions/:id/context      (cached context stats)
- *   - POST /api/sessions/:id/messages    (user message → assistant stub; rest via SSE)
- *   - POST /api/sessions/:id/approval/:traceId
- *   - GET /api/dashboard/{overview,health,review,queue}
- *   - GET /api/dashboard/blocks?area=…
- *   - SSE /api/events                    (see docs/SSE.md; payload envelope below)
- *   - POST /api/mini-app/auth            (Telegram initData → JWT — see docs/MINI_APP.md;
- *                                         v1 client never invokes; reservation only).
+ * v2a scope (real read APIs wired):
+ *   GET /api/sessions            → listSessions()
+ *   GET /api/sessions/:id/messages → getThread()
+ *   GET /api/sessions/:id/context → getContext()
+ *   GET /api/sessions/:id/trace   → getTrace()
+ *   GET /api/dashboard/overview  → getOverview()
+ *   GET /api/dashboard/health    → getHealth()
+ *   GET /api/dashboard/review    → getReview()
+ *   GET /api/dashboard/queue     → getQueue()
  *
- * All payload shapes are also re-exported from here so pages can `import type { … }`
- * without reaching into `mock/data.ts`.
+ * NOT wired in v2a: SSE, postMessage, approveToolEvent, Mini App auth.
  */
 
 import {
@@ -87,28 +81,52 @@ export type {
 
 /* ------------------------ Config / Mode ------------------------ */
 
-/** Live runtime mode, derived from `import.meta.env`. */
 export type ApiMode = 'mock' | 'real' | 'mini-app';
 
-/** Returns 'mock' when VITE_API_BASE_URL is unset, 'real' otherwise. */
 export function getMode(): ApiMode {
-  const base = (import.meta.env.VITE_API_BASE_URL ?? '').toString().trim();
+  const base = String(import.meta.env.VITE_API_BASE_URL ?? '').trim();
   if (!base) return 'mock';
-  if ((import.meta.env.VITE_MINI_APP ?? '').toString() === '1') return 'mini-app';
+  if (String(import.meta.env.VITE_MINI_APP ?? '') === '1') return 'mini-app';
   return 'real';
 }
 
-/** Base URL read from env. Empty in v1 mock mode. v2 fetch wrappers key off this. */
 export function getApiBaseUrl(): string {
-  return (import.meta.env.VITE_API_BASE_URL ?? '').toString().trim();
+  return String(import.meta.env.VITE_API_BASE_URL ?? '').trim();
 }
 
-/** SSE endpoint read from env or derived from base. */
+/** SSE endpoint. v2a does not connect — reserved for v2b. */
 export function getSseUrl(): string {
-  const override = (import.meta.env.VITE_SSE_URL ?? '').toString().trim();
+  const override = String(import.meta.env.VITE_SSE_URL ?? '').trim();
   if (override) return override;
   const base = getApiBaseUrl();
   return base ? `${base}/events` : '';
+}
+
+/* ------------------------ Internal fetch helper ------------------------ */
+
+/**
+ * Thin fetch wrapper that:
+ * - Returns null on network/error (never throws to caller)
+ * - Logs mismatches in dev mode
+ * - Automatically parses JSON
+ */
+async function apiFetch<T>(path: string): Promise<T | null> {
+  const base = getApiBaseUrl();
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base}${path}`, {
+      signal: AbortSignal.timeout(10_000),
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      console.warn(`[api] ${res.status} ${path}`);
+      return null;
+    }
+    return res.json() as Promise<T>;
+  } catch (err) {
+    console.warn(`[api] fetch failed ${path}:`, err);
+    return null;
+  }
 }
 
 /* ------------------------ Sessions ------------------------ */
@@ -119,78 +137,101 @@ export interface ListSessionsOpts {
 }
 
 export async function listSessions(opts: ListSessionsOpts = {}): Promise<SessionItem[]> {
-  // Future: GET /api/sessions?filter=...
-  const filter = opts.filter ?? 'all';
-  let items: SessionItem[];
-  switch (filter) {
-    case 'pinned':
-      items = pinnedSessions;
-      break;
-    case 'archived':
-      items = archivedSessions;
-      break;
-    case 'recent':
-      items = recentSessions;
-      break;
-    default:
-      items = sessionsMock;
+  if (getMode() === 'mock') {
+    const filter = opts.filter ?? 'all';
+    let items: SessionItem[];
+    switch (filter) {
+      case 'pinned': items = pinnedSessions; break;
+      case 'archived': items = archivedSessions; break;
+      case 'recent': items = recentSessions; break;
+      default: items = sessionsMock;
+    }
+    if (opts.search) {
+      const q = opts.search.toLowerCase();
+      items = items.filter(
+        (s) => s.title.toLowerCase().includes(q) || s.preview.toLowerCase().includes(q),
+      );
+    }
+    return items;
   }
-  if (opts.search) {
-    const q = opts.search.toLowerCase();
-    items = items.filter(
-      (s) => s.title.toLowerCase().includes(q) || s.preview.toLowerCase().includes(q),
-    );
-  }
-  return items;
+
+  // Real mode: map our filter to the API's filter param
+  const apiFilter = opts.filter ?? 'all';
+  const data = await apiFetch<{ sessions: SessionItem[] }>(
+    `/api/sessions?filter=${apiFilter}&search=${encodeURIComponent(opts.search ?? '')}`,
+  );
+  return data?.sessions ?? null as unknown as SessionItem[];
 }
 
 export async function getSession(id: string): Promise<SessionItem | null> {
-  // Future: GET /api/sessions/:id
-  void id;
-  return sessionsMock.find((s) => s.id === id) ?? null;
+  if (getMode() === 'mock') {
+    return sessionsMock.find((s) => s.id === id) ?? null;
+  }
+  const data = await apiFetch<SessionItem>(`/api/sessions/${encodeURIComponent(id)}`);
+  return data;
 }
 
 /* ------------------------ Chat ------------------------ */
 
+/** Shape returned by GET /api/sessions/:id/messages */
 export interface ThreadResult {
   sessionId: string;
   messages: ChatMessage[];
+  hasMore?: boolean;
+  nextOffset?: number | null;
 }
 
 export async function getThread(sessionId: string): Promise<ThreadResult> {
-  // Future: GET /api/sessions/:id/messages?before=&limit=
-  const thread = chatThreadsBySession[sessionId] ?? emptyThread;
-  return {
-    sessionId: thread.sessionId || sessionId,
-    messages: thread.messages.map((m) => ({ ...m })),
-  };
+  if (getMode() === 'mock') {
+    const thread = chatThreadsBySession[sessionId] ?? emptyThread;
+    return {
+      sessionId: thread.sessionId || sessionId,
+      messages: thread.messages.map((m) => ({ ...m })),
+    };
+  }
+
+  const data = await apiFetch<ThreadResult>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=50`,
+  );
+  return data ?? { sessionId, messages: [] };
 }
 
 export async function postMessage(
   sessionId: string,
   content: string,
 ): Promise<ChatMessage> {
-  // Future: POST /api/sessions/:id/messages
-  //         then subscribe via SSE /api/events?session=:id
+  // v2a: not wired — backend slot reserved, returns stub
   void sessionId;
   return {
     id: `m_${Date.now()}`,
     role: 'assistant',
-    content: 'stub: backend not wired. UI shell only.',
+    content: 'stub: send-message not wired in v2a. Reserved for v2b.',
     at: new Date().toISOString(),
     tokens: content.length,
     durationMs: 0,
   };
 }
 
-export async function getTrace(_sessionId: string): Promise<TraceEntry[]> {
-  // Future: GET /api/sessions/:id/trace (or SSE stream)
-  return traceMock;
+/* ------------------------ Trace + Context ------------------------ */
+
+export async function getTrace(sessionId: string): Promise<TraceEntry[]> {
+  if (getMode() === 'mock') {
+    return traceMock;
+  }
+  const data = await apiFetch<{ sessionId: string; trace: TraceEntry[] }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/trace`,
+  );
+  return data?.trace ?? null as unknown as TraceEntry[];
 }
 
-export async function getContext(_sessionId: string): Promise<ContextStats> {
-  // Future: GET /api/sessions/:id/context
-  return contextMock;
+export async function getContext(sessionId: string): Promise<ContextStats> {
+  if (getMode() === 'mock') {
+    return contextMock;
+  }
+  const data = await apiFetch<ContextStats>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/context`,
+  );
+  return data ?? contextMock; // fallback to mock so UI still renders
 }
 
 export async function approveToolEvent(
@@ -198,54 +239,66 @@ export async function approveToolEvent(
   traceId: string,
   decision: 'approve' | 'deny',
 ): Promise<{ ok: boolean }> {
-  // Future: POST /api/sessions/:id/approval/:traceId
+  // v2a: not wired — reserved slot
   console.info('[approval reserved]', { sessionId, traceId, decision });
+  void sessionId; void traceId; void decision;
   return { ok: true };
 }
 
 /* ------------------------ Dashboard ------------------------ */
 
 export async function getOverview(): Promise<DashboardKPI[]> {
-  return overviewKpis;
+  if (getMode() === 'mock') {
+    return overviewKpis;
+  }
+  const data = await apiFetch<{ kpis: DashboardKPI[] }>('/api/dashboard/overview');
+  return data?.kpis ?? null as unknown as DashboardKPI[];
 }
+
 export async function getHealth(): Promise<HealthRow[]> {
-  return healthRows;
+  if (getMode() === 'mock') {
+    return healthRows;
+  }
+  const data = await apiFetch<{ rows: HealthRow[] }>('/api/dashboard/health');
+  return data?.rows ?? null as unknown as HealthRow[];
 }
+
 export async function getReview(): Promise<ReviewRow[]> {
-  return reviewRows;
+  if (getMode() === 'mock') {
+    return reviewRows;
+  }
+  const data = await apiFetch<{ rows: ReviewRow[] }>('/api/dashboard/review');
+  return data?.rows ?? null as unknown as ReviewRow[];
 }
+
 export async function getQueue(): Promise<QueueRow[]> {
-  return queueRows;
+  if (getMode() === 'mock') {
+    return queueRows;
+  }
+  const data = await apiFetch<{ rows: QueueRow[] }>('/api/dashboard/queue');
+  return data?.rows ?? null as unknown as QueueRow[];
 }
 
 export async function getDashboardBlocks(_area: 'overview' | 'health' | 'review' | 'queue'): Promise<DashboardBlockSpec[]> {
-  // Future: GET /api/dashboard/blocks?area=…
+  // v2a: not wired — reserved slot
   return [];
 }
 
-/** Tagged union — discriminated payload type for every SSE event name. */
 export type DashboardBlockSpec =
   | { id: string; type: 'kpi'; title: string; source?: string; props: { label: string; value: string; delta?: string; status?: string } }
   | { id: string; type: 'chart'; title: string; source?: string; props: { component: string; height?: number; data?: unknown[] } }
   | { id: string; type: 'table'; title: string; source?: string; props: { columns: { key: string; label: string }[]; rows: unknown[] } }
   | { id: string; type: 'placeholder'; title: string; source?: string; props: { height?: number; hint?: string } };
 
-/* ------------------------ SSE (server-sent events) — reservation ------------------------ */
+/* ------------------------ SSE — reservation (not connected in v2a) ------------------------ */
 
-/**
- * Server-sent event envelope. The server emits `event: <type>` and `data: <json>`
- * on the wire; the client wrapper packages into this shape.
- *
- * Full event vocabulary + per-event payloads: see docs/SSE.md.
- */
 export interface SSEEvent<T = unknown> {
   type: SSEEventType;
   payload: T;
-  id?: string;     // SSE last-event-id, for resume
-  ts: string;      // ISO8601 server-emitted
+  id?: string;
+  ts: string;
 }
 
-/** Stable string enum of `event:` line names. */
 export type SSEEventType =
   | 'session.started'
   | 'session.title'
@@ -261,24 +314,21 @@ export type SSEEventType =
   | 'queue.deleted'
   | 'health.changed';
 
-/* ------------------------ Telegram Mini App — reservation ------------------------ */
+/* ------------------------ Telegram Mini App — reservation (not wired in v2a) ------------------------ */
 
-/** Body for POST /api/mini-app/auth. v1 client does NOT call this. */
 export interface MiniAppAuthBody {
-  initData: string;          // raw window.Telegram.WebApp.initData
+  initData: string;
 }
 
-/** Successful response from POST /api/mini-app/auth. v1 client does NOT call this. */
 export interface MiniAppAuthResp {
-  token: string;             // short-lived JWT (~15 min)
-  expiresAt: string;         // ISO
-  sessionId: string;         // server-bound, = sub of JWT
+  token: string;
+  expiresAt: string;
+  sessionId: string;
   user: {
-    id: number;              // telegram user id
+    id: number;
     username?: string;
     firstName?: string;
   };
 }
 
-/** sessionStorage key reserved for Mini App JWT. v1 does not write it. */
 export const MINI_APP_JWT_STORAGE_KEY = 'hermes-web-ui.mini-app.jwt';

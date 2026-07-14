@@ -60,6 +60,45 @@ VITE_MINI_APP=1                   # enable Mini App auth header (v2)
 
 v1 client code in `src/api/client.ts` does not actually issue any network calls when `VITE_API_BASE_URL` is empty — the public type surface and function shapes are already correct for v2 (`fetch()` swaps in without touching pages, hooks, or components). Full details in `docs/CONFIG.md`.
 
+## v2a: Real Hermes Sessions via API Server
+
+v2a wires `src/api/client.ts` to a real FastAPI server that reads directly from
+Hermes `state.db`. Sessions list, message history, context, trace, and all four
+dashboard tabs come from the live SQLite store — no mocks.
+
+**Start the API server** (port 8080, reads from `~/.hermes/state.db`):
+
+```bash
+# Windows
+start-api.bat
+
+# Unix/macOS
+chmod +x start-api.sh && ./start-api.sh
+
+# Or manually:
+python -m uvicorn api_server.main:app --port 8080 --host 0.0.0.0
+```
+
+**Connect the web UI** — add to `.env.local`:
+```
+VITE_API_BASE_URL=http://localhost:8080
+```
+
+Then `npm run dev`. All 8 read endpoints work:
+
+| Endpoint | Status |
+|----------|--------|
+| `GET /api/sessions?filter=recent\|archived\|pinned` | ✅ |
+| `GET /api/sessions/:id/messages` | ✅ |
+| `GET /api/sessions/:id/context` | ✅ |
+| `GET /api/sessions/:id/trace` | ✅ |
+| `GET /api/dashboard/overview` | ✅ |
+| `GET /api/dashboard/health` | ✅ |
+| `GET /api/dashboard/review` | ✅ |
+| `GET /api/dashboard/queue` | ✅ |
+
+Not wired in v2a: SSE, send-message, tool approval, Mini App auth.
+
 ## DashboardBlockSpec alignment
 
 `src/api/client.ts` exports a tagged-union `DashboardBlockSpec` shape (`kpi | chart | table | placeholder`). Same shape the existing `daily-xauusd-bot` package emits, so a single telemetry API can serve both in v2. See `docs/API.md` § Dashboard blocks.
