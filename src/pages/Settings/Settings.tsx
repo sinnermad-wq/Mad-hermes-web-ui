@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { TabStrip } from '../../components/UI/Tabs';
 import { SectionCard } from '../../components/UI/Card';
 import { StatusBadge, type BadgeTone } from '../../components/UI/Badge';
 import { useTheme } from '../../hooks/useTheme';
+import { useAuth } from '../../contexts/AuthContext';
 import './Settings.css';
 
 type Section = 'profile' | 'appearance' | 'channels' | 'advanced';
@@ -54,8 +56,24 @@ export function SettingsPage() {
 }
 
 function ProfileSection() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
   return (
     <SectionCard title="Profile">
+      <div className="field-row">
+        <div className="field">
+          <label>Username</label>
+          <input type="text" value={user?.username ?? ''} readOnly />
+        </div>
+        <div className="field">
+          <label>User ID</label>
+          <input type="text" value={user?.id ?? ''} readOnly />
+        </div>
+      </div>
       <div className="field-row">
         <div className="field">
           <label>Display name</label>
@@ -88,6 +106,11 @@ function ProfileSection() {
             <option value="zh-CN">简体中文</option>
           </select>
         </div>
+      </div>
+      <div style={{ marginTop: 'var(--space-3)', display: 'flex', justifyContent: 'flex-end' }}>
+        <button type="button" className="danger-btn" onClick={handleLogout}>
+          Sign out
+        </button>
       </div>
       <p className="text-tertiary" style={{ fontSize: 'var(--text-xs)', margin: 0 }}>
         Profile changes are local-only in v1. v2 will sync via FastAPI.

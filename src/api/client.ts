@@ -107,11 +107,22 @@ export function getSseUrl(): string {
 
 /* ------------------------ Internal fetch helper ------------------------ */
 
+/** Authorization token key — mirrors src/api/auth.ts */
+const AUTH_TOKEN_KEY = 'hermes-web-ui.access-token';
+
+/** 401 handler — redirect to login and clear stale token */
+function handleUnauthorized() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.location.href = '/login';
+}
+
 /**
  * Thin fetch wrapper that:
  * - Returns null on network/error (never throws to caller)
  * - Logs mismatches in dev mode
  * - Automatically parses JSON
+ * - Adds Authorization: Bearer <token> header
+ * - Redirects to /login on 401
  */
 async function apiFetch<T>(
   path: string,
@@ -119,13 +130,25 @@ async function apiFetch<T>(
 ): Promise<T | null> {
   const base = getApiBaseUrl();
   if (!base) return null;
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
   try {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
     const res = await fetch(`${base}${path}`, {
       method: opts.method ?? 'GET',
       signal: AbortSignal.timeout(10_000),
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers,
       body: opts.body,
     });
+    if (res.status === 401) {
+      handleUnauthorized();
+      return null;
+    }
     if (!res.ok) {
       console.warn(`[api] ${res.status} ${path}`);
       return null;

@@ -25,7 +25,24 @@ from typing import Any, Optional
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+# Auth imports
+from .auth import (
+    create_tokens,
+    get_current_user_id,
+    verify_refresh_token,
+    create_access_token,
+    create_refresh_token,
+    verify_access_token,
+)
+from .users import (
+    authenticate_user,
+    create_user,
+    get_user_by_id,
+    user_exists,
+)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hermes-api")
 
@@ -48,17 +65,38 @@ if not DB_PATH:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+# Auth enabled flag (set HERMES_AUTH_ENABLED=1 to require authentication)
+AUTH_ENABLED = os.environ.get("HERMES_AUTH_ENABLED", "").lower() in ("1", "true", "yes")
+
 app = FastAPI(
     title="Hermes API",
     description="Read-only API over Hermes Agent session store.",
     version="1.0.0",
 )
 
+# CORS — controlled via ALLOWED_ORIGINS env var
+# Comma-separated list, no wildcards in production.
+# Dev fallback: allow all (when ALLOWED_ORIGINS is empty and HERMES_ENV != production)
+_allowed_raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+if _allowed_raw:
+    _allowed_origins = [o.strip() for o in _allowed_raw.split(",") if o.strip()]
+    _log_cors = logger.info
+else:
+    if os.environ.get("HERMES_ENV") == "production":
+        raise RuntimeError(
+            "ALLOWED_ORIGINS env var is required in production mode. "
+            "Set e.g. ALLOWED_ORIGINS=http://localhost:5173,http://192.168.31.233:5173"
+        )
+    _allowed_origins = ["*"]
+    _log_cors = logger.warning
+
+_log_cors("CORS origins: %s", _allowed_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten for production
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -274,8 +312,153 @@ def health() -> dict:
     except Exception as e:
         raise HTTPException(503, str(e))
 
+# -----------------------------------------------------------------------------
+# Authentication
+# -----------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
+@app.post("/auth/register", tags=["auth"])
+async def register(request: Request) -> dict:
+    """
+    Register a new user account.
+    
+    Request body: { "username": "string", "email": "string", "password": "string" }
+    Response: { "id": "string", "username": "string", "email": "string" }
+    Errors: 400 - username/email already exists or validation error
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
+    username = (body.get("username") or "").strip()
+    email = (body.get("email") or "").strip()
+    password = (body.get("password") or "").strip()
+    
+    if not username or len(username) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email is required")
+    if not password or len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    try:
+        user = create_user(username, email, password)
+        logger.info(f"User registered: {username}")
+        return user
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/auth/login", tags=["auth"])
+async def login(request: Request) -> dict:
+    """
+    Authenticate user and return JWT tokens.
+    
+    Request body: { "username": "string", "password": "string" }
+    Response: { "access_token": "string", "refresh_token": "string", "token_type": "bearer", "expires_in": int }
+    Errors: 401 - invalid credentials
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
+    username = (body.get("username") or "").strip()
+    password = (body.get("password") or "").strip()
+    
+    if not username or not password:
+        raise HTTPException(status_code=401, detail="Username and password are required")
+    
+    user = authenticate_user(username, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    tokens = create_tokens(
+        subject=user["id"],
+        extra_claims={
+            "username": user["username"],
+            "email": user["email"],
+        }
+    )
+    logger.info(f"User logged in: {username}")
+    return tokens
+
+
+@app.post("/auth/refresh", tags=["auth"])
+async def refresh_token(request: Request) -> dict:
+    """
+    Refresh access token using a valid refresh token.
+    
+    Request body: { "refresh_token": "string" }
+    Response: { "access_token": "string", "refresh_token": "string", "token_type": "bearer", "expires_in": int }
+    Errors: 401 - invalid or expired refresh token
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
+    refresh_token_str = (body.get("refresh_token") or "").strip()
+    if not refresh_token_str:
+        raise HTTPException(status_code=401, detail="Refresh token is required")
+    
+    try:
+        payload = verify_refresh_token(refresh_token_str)
+        subject = payload.get("sub")
+        if not subject:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        
+        # Get user to include claims
+        user = get_user_by_id(subject)
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        tokens = create_tokens(
+            subject=subject,
+            extra_claims={
+                "username": user.get("username", ""),
+                "email": user.get("email", ""),
+            }
+        )
+        return tokens
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token refresh failed: {str(e)}")
+
+
+@app.get("/auth/me", tags=["auth"])
+async def get_me(user_id: str = Depends(get_current_user_id)) -> dict:
+    """
+    Get current authenticated user info.
+    
+    Requires: Bearer token in Authorization header
+    Response: { "id": "string", "username": "string", "email": "string", "is_admin": bool }
+    Errors: 401 - not authenticated
+    """
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "email": user["email"],
+        "is_admin": bool(user.get("is_admin", False)),
+    }
+
+
+@app.post("/auth/logout", tags=["auth"])
+async def logout(user_id: str = Depends(get_current_user_id)) -> dict:
+    """
+    Logout current user. Client should discard tokens after this call.
+    Token invalidation is handled client-side (stateless JWT).
+    """
+    logger.info(f"User logged out: {user_id}")
+    return {"message": "Logged out successfully"}
+
+
+# -----------------------------------------------------------------------------
+# Session pin state (sidecar — not part of Hermes session schema)
 # Session pin state (sidecar — not part of Hermes session schema)
 # Stored in ~/.hermes/pinned_sessions.json
 # ---------------------------------------------------------------------------

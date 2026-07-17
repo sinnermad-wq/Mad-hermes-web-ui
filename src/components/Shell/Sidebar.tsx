@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { MessageSquare, LayoutDashboard, History, Settings, Cpu } from 'lucide-react';
+import { MessageSquare, LayoutDashboard, History, Settings, Cpu, Activity } from 'lucide-react';
 import './Sidebar.css';
 
 interface Item {
@@ -11,9 +11,13 @@ interface Item {
 
 const primary: Item[] = [
   { to: '/', label: 'Chat', icon: MessageSquare },
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/sessions', label: 'Sessions', icon: History, badge: '3' },
+  { to: '/dashboard', label: 'XAUUSD Dashboard', icon: LayoutDashboard },
+  { to: '/sessions', label: 'Sessions', icon: History },
   { to: '/settings', label: 'Settings', icon: Settings },
+];
+
+const secondary: Item[] = [
+  { to: '/hermes-dashboard', label: 'Hermes Monitor', icon: Activity },
 ];
 
 export function Sidebar() {
@@ -34,6 +38,22 @@ export function Sidebar() {
                 <Icon size={16} strokeWidth={2} aria-hidden />
                 <span>{it.label}</span>
                 {it.badge && <span className="sidebar-badge">{it.badge}</span>}
+              </NavLink>
+            );
+          })}
+        </div>
+        <div className="sidebar-label" style={{ marginTop: '0.75rem' }}>Tools</div>
+        <div className="sidebar-nav">
+          {secondary.map((it) => {
+            const Icon = it.icon;
+            return (
+              <NavLink
+                key={it.to}
+                to={it.to}
+                className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
+              >
+                <Icon size={16} strokeWidth={2} aria-hidden />
+                <span>{it.label}</span>
               </NavLink>
             );
           })}

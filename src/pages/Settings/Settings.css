@@ -137,3 +137,18 @@
   white-space: pre-wrap;
   overflow-x: auto;
 }
+
+.danger-btn {
+  padding: 0.4rem 1rem;
+  background: #fff;
+  color: #c00;
+  border: 1px solid #fcc;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.danger-btn:hover {
+  background: #fee;
+}

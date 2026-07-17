@@ -1,13 +1,15 @@
 {
   "name": "hermes-web-ui",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "serve": "npx serve dist -l 5173 --single",
+    "start": "npm run serve"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -22,6 +24,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
+    "serve": "^14.2.6",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
   }

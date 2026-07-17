@@ -29,3 +29,10 @@ lerna-debug.log*
 dist/
 build/
 *.tsbuildinfo
+api_server/__pycache__/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
