@@ -24,10 +24,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    getCurrentUser()
-      .then((u) => setUser(u))
-      .catch(() => setUser(null))
-      .finally(() => setIsLoading(false));
+    let cancelled = false;
+    // Use async IIFE with try/catch to prevent unhandled rejections from
+    // crashing the React tree when the backend is unavailable.
+    (async () => {
+      try {
+        const u = await getCurrentUser();
+        if (!cancelled) setUser(u);
+      } catch {
+        if (!cancelled) setUser(null);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleLogin = async (username: string, password: string) => {
