@@ -68,7 +68,7 @@ function getHeaders(auth = true): Record<string, string> {
 
 const MOCK_USER: AuthUser = { id: 1, username: 'admin' };
 
-function mockLogin(username: string, password: string): Promise<TokenResponse> {
+function mockLogin(_username: string, password: string): Promise<TokenResponse> {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       if (password === 'admin123') {
@@ -88,18 +88,12 @@ function mockLogin(username: string, password: string): Promise<TokenResponse> {
   });
 }
 
-function mockRegister(username: string, password: string): Promise<AuthUser> {
+function mockRegister(_username: string, _password: string): Promise<AuthUser> {
   return new Promise((resolve) => {
     setTimeout(() => {
       resolve(MOCK_USER);
     }, 300);
   });
-}
-
-function mockGetCurrentUser(): Promise<AuthUser> {
-  const stored = localStorage.getItem(AUTH_USER_KEY);
-  if (stored) return Promise.resolve(JSON.parse(stored));
-  return Promise.reject(new Error('Not authenticated'));
 }
 
 function mockLogout(): void {
