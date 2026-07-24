@@ -82,6 +82,46 @@ export type {
   StatusMetaEntry,
 };
 
+
+/* ------------------------ NIM Budget ------------------------ */
+
+export interface NimBudget {
+  model: string;
+  inputRemaining: number;
+  outputRemaining: number;
+  inputLimit: number;
+  outputLimit: number;
+  isEstimate: boolean;
+  source: 'local_estimator' | 'hermes_state';
+  resetIn: number | null;
+  lastUpdated: string;
+  last429At: string | null;
+  dailyInputUsed: number;
+  dailyOutputUsed: number;
+}
+
+const MOCK_NIM_BUDGET: NimBudget = {
+  model: 'z-ai/glm-5.2',
+  inputRemaining: 740_000,
+  outputRemaining: 42_000,
+  inputLimit: 1_000_000,
+  outputLimit: 60_000,
+  isEstimate: true,
+  source: 'local_estimator',
+  resetIn: null,
+  lastUpdated: new Date().toISOString(),
+  last429At: null,
+  dailyInputUsed: 260_000,
+  dailyOutputUsed: 18_000,
+};
+
+export async function getNimBudget(): Promise<NimBudget> {
+  if (getMode() === 'mock') return MOCK_NIM_BUDGET;
+  const res = await fetch(`${getApiBaseUrl()}/nim-budget`, { credentials: 'include' });
+  if (!res.ok) throw new Error(`NIM budget failed: ${res.status}`);
+  return (await res.json()) as NimBudget;
+}
+
 /* ------------------------ Config / Mode ------------------------ */
 
 export type ApiMode = 'mock' | 'real' | 'mini-app';

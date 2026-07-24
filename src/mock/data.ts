@@ -15,6 +15,10 @@ export interface SessionItem {
   messageCount: number;
   pinned?: boolean;
   unread?: number;
+  model?: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
 }
 
 const now = Date.now();
@@ -108,7 +112,10 @@ export interface ChatMessage {
   content: string;
   at: string; // ISO
   tokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
   durationMs?: number;
+  model?: string;
 }
 
 export interface ChatThread {

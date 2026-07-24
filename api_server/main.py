@@ -236,8 +236,13 @@ def _row_to_session(row: dict, pinned_ids: set[str] | None = None) -> dict:
         "lastActiveAt": _unix_to_iso(ended_at or row.get("started_at")),
         "messageCount": row.get("message_count") or 0,
         "pinned": row["id"] in pinned_ids,
-        "unread": 0,
-    }
+                "unread": 0,
+                # model + token stats
+                "model": row.get("model") or None,
+                "inputTokens": row.get("input_tokens") or 0,
+                "outputTokens": row.get("output_tokens") or 0,
+                "totalTokens": (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0),
+            }
 
 
 def _row_to_message(row: dict) -> dict:
@@ -274,6 +279,12 @@ def _row_to_message(row: dict) -> dict:
     }
     if row.get("token_count"):
         result["tokens"] = row["token_count"]
+    if row.get("prompt_tokens"):
+        result["promptTokens"] = row["prompt_tokens"]
+    if row.get("completion_tokens"):
+        result["completionTokens"] = row["completion_tokens"]
+    if row.get("model"):
+        result["model"] = row["model"]
     return result
 
 
@@ -1464,6 +1475,175 @@ async def sse_events(
 # Run
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# NIM Budget / Token Bucket Estimator
+# Path 1 (preferred): Read from Hermes nim_state.json (~/.hermes/nim_state.json)
+# Path 2 (fallback): Local token-bucket estimation (isEstimate=True)
+#
+# NIM rate-limit headers: x-ratelimit-remaining-tokens,
+#   x-ratelimit-limit-tokens, x-ratelimit-reset-tokens, retry-after
+# ---------------------------------------------------------------------------
+
+_NIM_STATE_FILE = os.path.join(os.path.expanduser("~"), ".hermes", "nim_state.json")
+
+_token_bucket = {
+    "input_tokens": 1_000_000,
+    "output_tokens": 60_000,
+    "input_refill_rate": 1000,
+    "output_refill_rate": 200,
+    "last_refill_at": None,
+    "model": os.environ.get("HERMES_MODEL", "z-ai/glm-5.2"),
+    "last_429_at": None,
+}
+
+
+def _refill_bucket() -> None:
+    now = time.time()
+    if _token_bucket["last_refill_at"] is None:
+        _token_bucket["last_refill_at"] = now
+        return
+    elapsed = now - _token_bucket["last_refill_at"]
+    _token_bucket["input_tokens"] = min(
+        1_000_000,
+        _token_bucket["input_tokens"] + int(elapsed * _token_bucket["input_refill_rate"]),
+    )
+    _token_bucket["output_tokens"] = min(
+        60_000,
+        _token_bucket["output_tokens"] + int(elapsed * _token_bucket["output_refill_rate"]),
+    )
+    _token_bucket["last_refill_at"] = now
+
+
+@app.get("/api/nim-budget", tags=["monitor"])
+def get_nim_budget() -> dict:
+    """
+    Get NVIDIA NIM quota status.
+
+    Response: {
+        model, inputRemaining, outputRemaining,
+        inputLimit, outputLimit,
+        isEstimate (True=local estimator, False=real NIM signal),
+        source ("hermes_state" | "local_estimator"),
+        resetIn (seconds until fully refilled, null if real),
+        lastUpdated (ISO), last429At (ISO | null),
+        dailyInputUsed, dailyOutputUsed
+    }
+    """
+    _refill_bucket()
+
+    # Path 1: Hermes nim_state.json
+    if os.path.exists(_NIM_STATE_FILE):
+        try:
+            with open(_NIM_STATE_FILE) as f:
+                hs = json.load(f)
+            return {
+                "model": hs.get("model", _token_bucket["model"]),
+                "inputRemaining": hs.get("remaining_tokens", _token_bucket["input_tokens"]),
+                "outputRemaining": hs.get("remaining_output_tokens", _token_bucket["output_tokens"]),
+                "inputLimit": hs.get("limit_tokens", 1_000_000),
+                "outputLimit": hs.get("limit_output_tokens", 60_000),
+                "isEstimate": False,
+                "source": "hermes_state",
+                "resetIn": None,
+                "lastUpdated": hs.get("last_updated", datetime.now().isoformat()),
+                "last429At": hs.get("last_429_at"),
+                "dailyInputUsed": hs.get("daily_input_used", 0),
+                "dailyOutputUsed": hs.get("daily_output_used", 0),
+            }
+        except Exception:
+            pass
+
+    # Path 2: Local estimation
+    reset_in = None
+    if _token_bucket["input_tokens"] < 100:
+        needed = 1_000_000 - _token_bucket["input_tokens"]
+        reset_in = int(needed / _token_bucket["input_refill_rate"])
+
+    daily_in, daily_out = 0, 0
+    try:
+        conn = _get_conn()
+        today_ts = datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc
+        ).timestamp()
+        row = conn.execute(
+            "SELECT COALESCE(SUM(input_tokens),0) as di, COALESCE(SUM(output_tokens),0) as do "
+            "FROM sessions WHERE started_at >= ?",
+            (today_ts,),
+        ).fetchone()
+        if row:
+            daily_in, daily_out = row["di"] or 0, row["do"] or 0
+        conn.close()
+    except Exception:
+        pass
+
+    return {
+        "model": _token_bucket["model"],
+        "inputRemaining": _token_bucket["input_tokens"],
+        "outputRemaining": _token_bucket["output_tokens"],
+        "inputLimit": 1_000_000,
+        "outputLimit": 60_000,
+        "isEstimate": True,
+        "source": "local_estimator",
+        "resetIn": reset_in,
+        "lastUpdated": datetime.now().isoformat(),
+        "last429At": None,
+        "dailyInputUsed": daily_in,
+        "dailyOutputUsed": daily_out,
+    }
+
+
+@app.post("/api/nim-budget/report", tags=["monitor"])
+async def report_nim_usage(request: Request) -> dict:
+    """
+    Hermes calls this after each NIM API call to update budget state.
+    Body: {
+        "model": str,
+        "prompt_tokens": int,
+        "completion_tokens": int,
+        "rate_limit_remaining": int | null,
+        "was_429": bool
+    }
+    """
+    body = await request.json() or {}
+    model = body.get("model", _token_bucket["model"])
+    pt = body.get("prompt_tokens", 0)
+    ct = body.get("completion_tokens", 0)
+    was_429 = body.get("was_429", False)
+
+    _token_bucket["input_tokens"] = max(0, _token_bucket["input_tokens"] - pt)
+    _token_bucket["output_tokens"] = max(0, _token_bucket["output_tokens"] - ct)
+    _token_bucket["model"] = model
+
+    if was_429:
+        _token_bucket["last_429_at"] = datetime.now().isoformat()
+
+    remaining = body.get("rate_limit_remaining")
+    if remaining is not None:
+        _token_bucket["input_tokens"] = remaining
+
+    _token_bucket["last_refill_at"] = time.time()
+
+    # Persist to Hermes state file
+    try:
+        os.makedirs(os.path.dirname(_NIM_STATE_FILE), exist_ok=True)
+        with open(_NIM_STATE_FILE, "w") as f:
+            json.dump(
+                {
+                    "model": model,
+                    "remaining_tokens": _token_bucket["input_tokens"],
+                    "remaining_output_tokens": _token_bucket["output_tokens"],
+                    "limit_tokens": 1_000_000,
+                    "limit_output_tokens": 60_000,
+                    "last_updated": datetime.now().isoformat(),
+                    "last_429_at": _token_bucket.get("last_429_at"),
+                },
+                f,
+            )
+    except Exception:
+        pass
+
+    return {"ok": True}
 if __name__ == "__main__":
     import uvicorn
 

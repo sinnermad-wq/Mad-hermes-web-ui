@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Send, History } from 'lucide-react';
+import { Send, History, ArrowLeft } from 'lucide-react';
 import { StatusBadge } from '../../components/UI/Badge';
 import { Tabs } from '../../components/UI/Tabs';
 import { DataTable } from '../../components/UI/DataTable';
@@ -16,10 +16,12 @@ import {
   type SessionItem,
   type ChatMessage,
   type TraceEntry,
+  getNimBudget,
+  type NimBudget,
 } from '../../api/client';
 import './Chat.css';
 
-type DetailTab = 'trace' | 'context' | 'approval';
+type DetailTab = 'trace' | 'context' | 'approval' | 'budget';
 
 function fmtRelative(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -40,6 +42,19 @@ function fmtClock(iso: string): string {
   });
 }
 
+function fmtK(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function fmtTokBreakdown(prompt: number | undefined, completion: number | undefined): string {
+  if (!prompt && !completion) return '';
+  const pt = prompt ? fmtK(prompt) : '?';
+  const ct = completion ? fmtK(completion) : '?';
+  return `Prompt ${pt} · Completion ${ct}`;
+}
+
 const sessionCols: string[] = ['ok', 'ok', 'ok', 'runtime', 'ok', 'runtime'];
 
 export function ChatPage() {
@@ -52,6 +67,8 @@ export function ChatPage() {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [nimBudget, setNimBudget] = useState<NimBudget | null>(null);
   const convoRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -77,6 +94,12 @@ export function ChatPage() {
   useEffect(() => {
     if (convoRef.current) convoRef.current.scrollTop = convoRef.current.scrollHeight;
   }, [messages]);
+
+  useEffect(() => {
+    if (activeId) setMobileChatOpen(true);
+    getNimBudget().then(setNimBudget).catch(() => setNimBudget(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   const submit = async () => {
     if (!input.trim() || !activeId) return;
@@ -146,7 +169,7 @@ export function ChatPage() {
   );
 
   return (
-    <div className="chat-page">
+<div className={"chat-page" + (mobileChatOpen ? " mobile-chat-open" : "")}>
       {/* Session list */}
       <div className="session-list-header">
         <strong style={{ fontSize: 'var(--text-md)' }}>Sessions</strong>
@@ -183,9 +206,18 @@ export function ChatPage() {
                   tone={s.status === 'active' ? 'ok' : s.status === 'error' ? 'err' : 'pending'}
                   label={s.source}
                 />
+                {s.model && (
+                  <span className="model-badge">{s.model.split('/').pop()}</span>
+                )}
                 <span>{fmtRelative(s.lastActiveAt)} ago</span>
                 <span>·</span>
                 <span>{s.messageCount} msgs</span>
+                {s.totalTokens ? (
+                  <>
+                    <span>·</span>
+                    <span style={{ color: 'var(--accent-text, #10b981)' }}>{fmtK(s.totalTokens)} tok</span>
+                  </>
+                ) : null}
               </div>
               <div className="preview">{s.preview}</div>
             </div>
@@ -194,8 +226,22 @@ export function ChatPage() {
       </div>
 
       {/* Conversation */}
-      <div className="convo">
-        <div className="convo-body" ref={convoRef} role="log" aria-label="Conversation">
+      <div className="convo" style={{ display: 'flex', flexDirection: 'column' }}>
+        <div className="convo-header">
+          <button
+            onClick={() => setMobileChatOpen(false)}
+            className="back-btn"
+            aria-label="Back to sessions"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <span className="convo-title">{activeSession?.title || 'Chat'}</span>
+          {activeSession?.model && <span className="model-badge" style={{ fontSize: 10 }}>{activeSession.model.split('/').pop()}</span>}
+          {activeSession?.totalTokens ? (
+            <span className="text-tertiary" style={{ fontSize: 'var(--text-xs)', marginLeft: 'auto' }}>{fmtK(activeSession.totalTokens)} tok</span>
+          ) : null}
+        </div>
+        <div className="convo-body"  ref={convoRef} role="log" aria-label="Conversation">
           {messages.map((m) => (
             <div key={m.id} className={'msg ' + m.role}>
               <div className="bubble">{m.content}</div>
@@ -209,12 +255,25 @@ export function ChatPage() {
                     <span>{m.durationMs}ms</span>
                   </>
                 )}
-                {m.tokens != null && (
+                {m.model && (
+                  <>
+                    <span>·</span>
+                    <span className="model-badge" style={{ fontSize: 10 }}>{m.model.split('/').pop()}</span>
+                  </>
+                )}
+                {m.promptTokens != null && m.completionTokens != null ? (
+                  <>
+                    <span>·</span>
+                    <span className="tok-breakdown" title={fmtTokBreakdown(m.promptTokens, m.completionTokens)}>
+                      P {fmtK(m.promptTokens)} · C {fmtK(m.completionTokens)}
+                    </span>
+                  </>
+                ) : m.tokens != null ? (
                   <>
                     <span>·</span>
                     <span>{m.tokens} tok</span>
                   </>
-                )}
+                ) : null}
               </div>
             </div>
           ))}
@@ -277,6 +336,9 @@ export function ChatPage() {
             {activeSession.id}
           </span>
         )}
+        {activeSession?.model && (
+          <span className="model-badge" style={{ marginLeft: 8 }}>{activeSession.model.split('/').pop()}</span>
+        )}
       </div>
       <div className="detail-tabs">
         <Tabs<DetailTab>
@@ -284,6 +346,7 @@ export function ChatPage() {
             { id: 'trace', label: 'Trace' },
             { id: 'context', label: 'Context' },
             { id: 'approval', label: 'Approval' },
+            { id: 'budget', label: 'NIM Budget' },
           ]}
           value={tab}
           onChange={setTab}
@@ -351,6 +414,59 @@ export function ChatPage() {
               <li className="text-secondary">Tools registered: <span className="text-mono">{contextInfo.toolsRegistered}</span></li>
             </ul>
           </div>
+        )}
+
+
+        {tab === 'budget' && nimBudget && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span className="model-badge" style={{ fontSize: 'var(--text-xs)' }}>{nimBudget.model.split('/').pop()}</span>
+              <span className="text-tertiary" style={{ fontSize: 'var(--text-xs)' }}>
+                {nimBudget.isEstimate ? '~estimated' : 'real'} &middot; {nimBudget.source}
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', fontSize: 'var(--text-sm)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="text-secondary">Input remaining</span>
+                <span className="text-mono" style={{ color: nimBudget.inputRemaining < 100_000 ? 'var(--color-warn)' : 'inherit' }}>
+                  {fmtK(nimBudget.inputRemaining)} / {fmtK(nimBudget.inputLimit)}
+                </span>
+              </div>
+              <div style={{ height: 6, borderRadius: 3, background: 'var(--bg-surface-2)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: Math.round(nimBudget.inputRemaining / nimBudget.inputLimit * 100) + '%', background: nimBudget.inputRemaining < 100_000 ? 'var(--color-warn)' : 'var(--accent)', borderRadius: 3, transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="text-secondary">Output remaining</span>
+                <span className="text-mono" style={{ color: nimBudget.outputRemaining < 10_000 ? 'var(--color-warn)' : 'inherit' }}>
+                  {fmtK(nimBudget.outputRemaining)} / {fmtK(nimBudget.outputLimit)}
+                </span>
+              </div>
+              <div style={{ height: 6, borderRadius: 3, background: 'var(--bg-surface-2)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: Math.round(nimBudget.outputRemaining / nimBudget.outputLimit * 100) + '%', background: nimBudget.outputRemaining < 10_000 ? 'var(--color-warn)' : 'var(--accent)', borderRadius: 3, transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="text-secondary">Today input</span>
+                <span className="text-mono">{fmtK(nimBudget.dailyInputUsed)} tok</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="text-secondary">Today output</span>
+                <span className="text-mono">{fmtK(nimBudget.dailyOutputUsed)} tok</span>
+              </div>
+              {nimBudget.last429At && (
+                <div style={{ color: 'var(--color-warn)', fontSize: 'var(--text-xs)' }}>
+                  Warning: Rate-limited at {new Date(nimBudget.last429At).toLocaleTimeString()}
+                </div>
+              )}
+              {nimBudget.resetIn && nimBudget.isEstimate && (
+                <div className="text-tertiary" style={{ fontSize: 'var(--text-xs)' }}>
+                  ~Full refill in {Math.ceil(nimBudget.resetIn / 60)}min
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {tab === 'budget' && !nimBudget && (
+          <div className="placeholder-detail">Loading NIM budget&hellip;</div>
         )}
 
         {tab === 'approval' && (
